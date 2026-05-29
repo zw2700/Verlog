@@ -27,12 +27,13 @@ class AsyncTickerEnvWrapper(gym.Wrapper):
         self.last_info = None
         self.episode_done = False
 
-    def get_last_obs(self):
+    def get_last_obs(self, **kwargs):
         """Return last observation (used by VERL for resuming after reset)."""
         return self.last_obs, self.last_info
 
     def reset(self, **kwargs):
         """Reset environment and cache initial observation."""
+        kwargs.pop("agent_id", None)  # VERL routing arg, not part of gym env interface
         obs, info = self.env.reset(**kwargs)
         self.last_obs = obs
         self.last_info = info
@@ -53,7 +54,11 @@ class AsyncTickerEnvWrapper(gym.Wrapper):
         self.last_info = info
 
         # Track episode status
-        if terminated or truncated:
+        # NOTE: terminated/truncated may be per-agent dicts; a non-empty dict is
+        # always truthy, so check actual values — not the dict itself.
+        scalar_term = any(terminated.values()) if isinstance(terminated, dict) else bool(terminated)
+        scalar_trunc = any(truncated.values()) if isinstance(truncated, dict) else bool(truncated)
+        if scalar_term or scalar_trunc:
             self.episode_done = True
 
         return obs, reward, terminated, truncated, info

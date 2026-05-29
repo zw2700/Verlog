@@ -344,10 +344,36 @@ class ToolAgentLoop(AgentLoopBase):
             # Store observation before step (always, for loop detection)
             observation = copy.deepcopy(messages)
             
+            acting_agent_id = agent_id
             messages, reward, terminated, truncated, info = env.step(actions)
-            if info and info.get("active_agent") is not None:
-                agent_id = info.get("active_agent")
-            done = np.logical_or(terminated, truncated)
+            if num_turns == 0 and env_idx == 0:
+                print(f"[DEBUG info structure] type={type(info)} keys={list(info.keys()) if isinstance(info, dict) else 'N/A'}", flush=True)
+                if isinstance(info, dict):
+                    first_val = next(iter(info.values()))
+                    print(f"[DEBUG info structure] first value type={type(first_val)} keys={list(first_val.keys())[:6] if isinstance(first_val, dict) else first_val}", flush=True)
+            # info may be a flat dict (single-agent env) or agent-keyed dict
+            # (multi-agent env like hiring_env: {"prof_1": base_info, ...}).
+            # Normalise to a flat dict for all downstream lookups.
+            _flat_info = info
+            if isinstance(info, dict) and info:
+                first_val = next(iter(info.values()))
+                if isinstance(first_val, dict) and "active_agent" in first_val:
+                    _flat_info = first_val  # unwrap agent-keyed dict
+            if _flat_info and _flat_info.get("active_agent") is not None:
+                agent_id = _flat_info.get("active_agent")
+            if isinstance(reward, dict):
+                scalar_reward = float(reward.get(acting_agent_id, sum(reward.values())))
+            else:
+                scalar_reward = float(reward)
+            if isinstance(terminated, dict):
+                scalar_terminated = any(terminated.values())
+            else:
+                scalar_terminated = bool(terminated)
+            if isinstance(truncated, dict):
+                scalar_truncated = any(truncated.values())
+            else:
+                scalar_truncated = bool(truncated)
+            done = scalar_terminated or scalar_truncated
             
             # Detect loop: check if the observation contains a hint (for both val and training)
             is_loop = self._detect_loop(observation)
@@ -355,14 +381,12 @@ class ToolAgentLoop(AgentLoopBase):
                 all_loop_counts += 1
             
             # Update metrics with info and loop tracking
-            step_env_metrics = info.get("metrics", {})
+            step_env_metrics = _flat_info.get("metrics", {})
             if step_env_metrics:
                 metrics["env_metrics"] = step_env_metrics
+                print(f"[DEBUG env_metrics] env_idx={env_idx} is_val={is_val} turn={num_turns} episode done → env_metrics captured (keys: {list(step_env_metrics.keys())[:3]}...)", flush=True)
             metrics["loop_counts"] = 1.0 if is_loop else 0.0
             metrics["loop_rate"] = all_loop_counts / (num_turns + 1) if (num_turns + 1) > 0 else 0.0
-            
-            if done and is_val:
-                break
             
             turn_data = AgentLoopOutput(
                 prompt_ids=prompt_ids,
@@ -370,7 +394,7 @@ class ToolAgentLoop(AgentLoopBase):
                 response_mask=response_mask,
                 response_logprobs=response_logprobs if output.log_probs else None,
                 metrics=metrics,
-                rewards=reward,
+                rewards=scalar_reward,
                 done=done,
                 num_turns=num_turns,
                 env_idx=env_idx,
@@ -378,18 +402,21 @@ class ToolAgentLoop(AgentLoopBase):
                 turn_id=num_turns,
             )
             num_turns += 1
-            
+
             # batch_size = await counter.get_batch_size.remote()
             # mini_batch_size = int(batch_size // 32)
             # if num_turns == mini_batch_size + 1:
             #     break
-            
+
             prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self._build_prompt_ids(messages),
             )
-            
+
             is_full = await counter.increment.remote()
+            if done and is_val:
+                outputs.append(turn_data)
+                break
             if is_full and not is_val:
                 # Training truncation path: append exactly one bootstrap sample
                 # so output cardinality stays aligned with trainer expectations.
@@ -424,7 +451,7 @@ class ToolAgentLoop(AgentLoopBase):
                     response_ids=[outputs[-1].response_ids[0]] if outputs else [151645],
                     response_mask=[1],
                     metrics=dict(),
-                    rewards=reward if is_val else 0.0,
+                    rewards=scalar_reward if is_val else 0.0,
                     done=True,
                     num_turns=num_turns,
                     env_idx=env_idx,

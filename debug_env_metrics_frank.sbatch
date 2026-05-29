@@ -1,27 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=marl_frank
-#SBATCH --output=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/frank_%j.out
-#SBATCH --error=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/frank_%j.err
+#SBATCH --job-name=marl_debug
+#SBATCH --output=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/debug_%j.out
+#SBATCH --error=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/debug_%j.err
 #SBATCH --partition=general
 #SBATCH --qos=qos_general
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=200G
-#SBATCH --time=47:59:00
+#SBATCH --time=02:00:00
 #SBATCH --gres=gpu:a6000:4
-
-# For debugging/testing, use these settings instead:
-# #SBATCH --partition=debug
-# #SBATCH --qos=qos_debug
-# #SBATCH --time=02:00:00
-# #SBATCH --gres=gpu:a6000:2
-
-# For long runs with preemption tolerance, use these settings:
-# #SBATCH --partition=preempt
-# #SBATCH --qos=qos_preempt
-# #SBATCH --time=7-00:00:00
-# #SBATCH --gres=gpu:a6000:4
 
 set -euo pipefail
 
@@ -63,13 +51,12 @@ ulimit -u 65535 || true
 
 echo "=== Cleaning up stale Ray processes ==="
 $PYTHON_BIN -m ray stop --force 2>/dev/null || true
-# Kill all Ray-related processes by name (more robust than just "ray::")
 pkill -9 -f "ray::"        2>/dev/null || true
 pkill -9 -f "raylet"       2>/dev/null || true
 pkill -9 -f "gcs_server"   2>/dev/null || true
 pkill -9 -f "plasma_store" 2>/dev/null || true
 pkill -9 -f "dashboard"    2>/dev/null || true
-sleep 3  # give the OS time to release ports before starting a fresh Ray instance
+sleep 3
 rm -rf /tmp/ray 2>/dev/null || true
 rm -rf "${TMPDIR}/ray" 2>/dev/null || true
 
@@ -92,7 +79,7 @@ export CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((NUM_GPUS_PER_NODE-1)))
 
 export VLLM_USE_V1=1
 export VERL_AUTO_PADDING=TRUE
-export PYTHONUNBUFFERED=1  # flush Python stdout immediately so .out logs are readable
+export PYTHONUNBUFFERED=1
 
 echo "SLURM-assigned CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi -L || echo "WARN: nvidia-smi failed"
@@ -101,57 +88,41 @@ nvidia-smi -L || echo "WARN: nvidia-smi failed"
 # AGENT I/O & GAME LOGGING
 # ============================================================================
 
-LOG_PATH="$PROJECT_DIR/logs/agent_model_train_auton_${SLURM_JOB_ID}.log"
+LOG_PATH="$PROJECT_DIR/logs/agent_model_debug_${SLURM_JOB_ID}.log"
 mkdir -p "$(dirname "$LOG_PATH")"
 : > "$LOG_PATH"
 export VERL_AGENT_IO_LOG_PATH="$LOG_PATH"
-export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_train_auton_${SLURM_JOB_ID}.log"
+export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_debug_${SLURM_JOB_ID}.log"
 
 # ============================================================================
-# HYPERPARAMETERS
+# DEBUG HYPERPARAMETERS
+#
+# Goal: complete episodes within the counter window so env/ metrics fire.
+#   - NUM_ENVS=4 + BATCH_SIZE=64  →  64/4 = 16 turns/env
+#   - max_steps=15                →  episodes always terminate within 16 turns
+#   - test_freq=1                 →  validate every step (val episodes also complete)
+#   - critic_warmup=0             →  skip warmup; no batch.repeat(40)
+#   - total_training_steps=5      →  done in minutes
+#   - MICRO_BATCH_SIZE=16         →  faster actor/critic updates
 # ============================================================================
 
-NUM_ENVS=32
-BATCH_SIZE=256
-MINI_BATCH_SIZE=$((BATCH_SIZE))
+NUM_ENVS=4
+BATCH_SIZE=64
+MINI_BATCH_SIZE=64
 MICRO_BATCH_SIZE=4
-FORWARD_BATCH_SIZE=$((4 * MICRO_BATCH_SIZE))
+FORWARD_BATCH_SIZE=16
 OFFLOAD=false
-PPO_EPOCHS=2
+PPO_EPOCHS=1
 
-echo "=== Training Configuration ==="
+echo "=== Debug Configuration ==="
 echo "GPUs: $NUM_GPUS_PER_NODE"
-echo "CPUs: $SLURM_CPUS_PER_TASK"
-echo "Num Envs: $NUM_ENVS"
+echo "Num Envs: $NUM_ENVS  (16 turns/env before counter fills)"
 echo "Batch Size: $BATCH_SIZE"
-echo "PPO Epochs: $PPO_EPOCHS"
-echo "=============================="
-
-# ============================================================================
-# EXP LOGGING (requires claude-tools submodule)
-# ============================================================================
-
-# source "$PROJECT_DIR/claude-tools/exp_logging/sbatch_logging.sh"
-# EXP_WHAT_CHANGED="train_auton full run"
-# EXP_WANDB_PROJECT=wait_ratio_exps
-# EXP_NAME="train_auton_frank_${SLURM_JOB_ID}"
-# EXP_PROJECT_DIR="$PROJECT_DIR"
-# EXP_MODEL=Qwen/Qwen2.5-3B-Instruct
-# EXP_ADV_ESTIMATOR=gae
-# EXP_BATCH_SIZE=$BATCH_SIZE
-# EXP_NUM_ENVS=$NUM_ENVS
-# EXP_GPUS=$NUM_GPUS_PER_NODE
-# EXP_ACTOR_LR=1e-6
-# EXP_CRITIC_LR=1e-5
-# EXP_PPO_EPOCHS=$PPO_EPOCHS
-# EXP_CRITIC_WARMUP_STEPS=10
-# EXP_CRITIC_WARMUP_REPEAT=40
-# EXP_ROLLOUT_N=1
-# EXP_TOKEN_BUDGET=1000
-# EXP_STUDENTS_PER_BATCH=5
-# EXP_FEATURE_DIM=5
-# exp_log_start
-# trap exp_log_finalize EXIT
+echo "max_steps: 15  (episodes terminate within 16-turn window)"
+echo "critic_warmup: 0  (no warmup)"
+echo "total_training_steps: 5"
+echo "test_freq: 1  (validate every step)"
+echo "==========================="
 
 # ============================================================================
 # TRAINING
@@ -195,18 +166,16 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=True \
     trainer.balance_batch=False \
-    trainer.critic_warmup=10 \
-    trainer.critic_warmup_batch_repeat_times=40 \
-    trainer.critic_warmup_batch_divide_ratio=4 \
+    trainer.critic_warmup=0 \
     trainer.logger='["console","wandb"]' \
     trainer.project_name=wait_ratio_exps \
-    trainer.experiment_name="frank_auton_${SLURM_JOB_ID}" \
+    trainer.experiment_name="debug_env_metrics_${SLURM_JOB_ID}" \
     trainer.n_gpus_per_node=${NUM_GPUS_PER_NODE} \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
-    trainer.test_freq=30 \
+    trainer.test_freq=1 \
     trainer.total_epochs=15 \
-    trainer.total_training_steps=75 \
+    trainer.total_training_steps=5 \
     trainer.val_before_train=True \
     envs.num_envs=${NUM_ENVS} \
     envs.env_name=async_ticker_admissions \
@@ -215,7 +184,7 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     +envs.env_config.token_budget=1000 \
     +envs.env_config.feature_dim=5 \
     +envs.env_config.vote_threshold=0.5 \
-    +envs.env_config.max_steps=50 \
+    +envs.env_config.max_steps=15 \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=Qwen/Qwen2.5-3B-Instruct \
