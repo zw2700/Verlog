@@ -346,11 +346,6 @@ class ToolAgentLoop(AgentLoopBase):
             
             acting_agent_id = agent_id
             messages, reward, terminated, truncated, info = env.step(actions)
-            if num_turns == 0 and env_idx == 0:
-                print(f"[DEBUG info structure] type={type(info)} keys={list(info.keys()) if isinstance(info, dict) else 'N/A'}", flush=True)
-                if isinstance(info, dict):
-                    first_val = next(iter(info.values()))
-                    print(f"[DEBUG info structure] first value type={type(first_val)} keys={list(first_val.keys())[:6] if isinstance(first_val, dict) else first_val}", flush=True)
             # info may be a flat dict (single-agent env) or agent-keyed dict
             # (multi-agent env like hiring_env: {"prof_1": base_info, ...}).
             # Normalise to a flat dict for all downstream lookups.
@@ -384,7 +379,6 @@ class ToolAgentLoop(AgentLoopBase):
             step_env_metrics = _flat_info.get("metrics", {})
             if step_env_metrics:
                 metrics["env_metrics"] = step_env_metrics
-                print(f"[DEBUG env_metrics] env_idx={env_idx} is_val={is_val} turn={num_turns} episode done → env_metrics captured (keys: {list(step_env_metrics.keys())[:3]}...)", flush=True)
             metrics["loop_counts"] = 1.0 if is_loop else 0.0
             metrics["loop_rate"] = all_loop_counts / (num_turns + 1) if (num_turns + 1) > 0 else 0.0
             

@@ -1000,18 +1000,12 @@ class AgentLoopManager:
 
         # Aggregate env metrics (only present on done steps, one per episode)
         all_env_metrics = [m.get("env_metrics", {}) for chunk in metrics for m in chunk]
-        total_turns = sum(len(chunk) for chunk in metrics)
-        non_empty = [em for em in all_env_metrics if em]
-        print(f"[DEBUG _performance_metrics] total_turns={total_turns} turns_with_env_metrics={len(non_empty)}", flush=True)
-        all_env_metrics = non_empty
+        all_env_metrics = [em for em in all_env_metrics if em]
         if all_env_metrics:
             for key in all_env_metrics[0].keys():
                 values = [m[key] for m in all_env_metrics if key in m and isinstance(m[key], (int, float))]
                 if values:
                     loop_stats[f"env/{key}"] = float(np.mean(values))
-            print(f"[DEBUG _performance_metrics] env/ keys added to loop_stats: {[k for k in loop_stats if k.startswith('env/')][:5]}...", flush=True)
-        else:
-            print(f"[DEBUG _performance_metrics] no env_metrics found → env/ will be absent from wandb", flush=True)
 
         return timing, loop_stats
 

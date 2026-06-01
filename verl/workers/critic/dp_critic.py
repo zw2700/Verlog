@@ -239,7 +239,6 @@ class DataParallelPPOCritic(BasePPOCritic):
 
     @GPUMemoryLogger(role="dp critic", logger=logger)
     def update_critic(self, data: DataProto):
-        import time
         # make sure we are in training mode
         self.critic_module.train()
         metrics = {}
@@ -253,8 +252,6 @@ class DataParallelPPOCritic(BasePPOCritic):
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
-        num_mini_batches = len(mini_batches)
-        print(f"[update_critic] total_items={len(data)} num_mini_batches={num_mini_batches} ppo_epochs={self.config.ppo_epochs} micro_batch_size_per_gpu={self.config.ppo_micro_batch_size_per_gpu}", flush=True)
 
         for epoch_idx in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
@@ -267,14 +264,9 @@ class DataParallelPPOCritic(BasePPOCritic):
                     )
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
 
-                num_micro_batches = len(micro_batches)
-                if epoch_idx == 0 and batch_idx == 0:
-                    print(f"[update_critic] epoch=0 mini_batch=0: num_micro_batches={num_micro_batches} mini_batch_size={len(mini_batch)}", flush=True)
-
                 self.critic_optimizer.zero_grad()
 
-                for micro_idx, micro_batch in enumerate(micro_batches):
-                    t0 = time.time()
+                for micro_batch in micro_batches:
                     micro_batch = micro_batch.to(get_device_id())
                     micro_batch_metrics = {}
                     model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
@@ -282,9 +274,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                     values = model_inputs["values"]
                     returns = model_inputs["returns"]
 
-                    t1 = time.time()
                     vpreds = self._forward_micro_batch(model_inputs)
-                    t2 = time.time()
                     vf_loss, vf_clipfrac = core_algos.compute_value_loss(
                         vpreds=vpreds,
                         values=values,
@@ -293,8 +283,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                         cliprange_value=self.config.cliprange_value,
                         loss_agg_mode=self.config.loss_agg_mode,
                     )
-                    
-                    # Calculate off-policy metrics
+
                     off_policy_metrics = get_off_policy_metric(
                         returns=returns,
                         vpreds=vpreds,
@@ -302,26 +291,15 @@ class DataParallelPPOCritic(BasePPOCritic):
                         values=values,
                         cliprange_value=self.config.cliprange_value
                     )
-                    
+
                     if self.config.use_dynamic_bsz:
-                        # relative to the dynamic bsz
                         loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
                         loss = vf_loss * loss_scale_factor
                     else:
                         loss_scale_factor = 1 / self.gradient_accumulation
                         loss = vf_loss * loss_scale_factor
 
-                    t3 = time.time()
                     loss.backward()
-                    t4 = time.time()
-
-                    if epoch_idx == 0 and batch_idx == 0 and micro_idx == 0:
-                        seq_len = model_inputs["input_ids"].shape[1]
-                        print(
-                            f"[update_critic] first micro_batch: size={len(micro_batch)} seq_len={seq_len} "
-                            f"to_device={t1-t0:.3f}s forward={t2-t1:.3f}s loss={t3-t2:.3f}s backward={t4-t3:.3f}s",
-                            flush=True,
-                        )
 
                     micro_batch_metrics.update(
                         {
@@ -330,16 +308,10 @@ class DataParallelPPOCritic(BasePPOCritic):
                             "critic/vpred_mean": masked_mean(vpreds, response_mask).detach().item(),
                         }
                     )
-
-                    # Add off-policy metrics to micro_batch_metrics
                     micro_batch_metrics.update(off_policy_metrics)
-
                     append_to_dict(metrics, micro_batch_metrics)
 
-                t_opt_start = time.time()
                 grad_norm = self._optimizer_step()
-                if epoch_idx == 0 and batch_idx == 0:
-                    print(f"[update_critic] first optimizer_step: {time.time()-t_opt_start:.3f}s", flush=True)
                 mini_batch_metrics = {"critic/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
         self.critic_optimizer.zero_grad()
