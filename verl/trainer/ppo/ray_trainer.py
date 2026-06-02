@@ -1231,7 +1231,7 @@ class RayPPOTrainer:
                             batch.batch["reward_baselines"] = reward_baseline_tensor
 
                             del gen_baseline_batch, gen_baseline_output
-                    # repeat to align with repeated responses in rollout
+                    # repeat to align with repeated responses in rollout (>1 for GRPO)
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     
                     # assert batch_size should be equal to real batch size + agent_num * num_envs"

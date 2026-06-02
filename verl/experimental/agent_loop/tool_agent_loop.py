@@ -107,7 +107,8 @@ class ToolAgentLoop(AgentLoopBase):
         cls.response_length = config.actor_rollout_ref.rollout.response_length
         cls.io_log_path = os.getenv("VERL_AGENT_IO_LOG_PATH", "logs/agent_model_io5.log")
         cls.game_log_path = os.getenv("VERL_GAME_LOG_PATH", None)
-        cls.game_log_interval = int(os.getenv("VERL_GAME_LOG_INTERVAL", "10"))
+        cls.game_log_interval = int(os.getenv("VERL_GAME_LOG_INTERVAL", "1"))
+        cls._game_log_prompt_written = False
         cls.system_prompt = tokenizer.apply_chat_template(
             [{}], add_generation_prompt=False, tokenize=True, **cls.apply_chat_template_kwargs
         )
@@ -122,6 +123,7 @@ class ToolAgentLoop(AgentLoopBase):
         env_idx: int,
         turn_id: int,
         agent_id: str | None,
+        messages: list[dict[str, Any]],
         prompt_ids: list[int],
         response_ids: list[int],
     ) -> str:
@@ -140,7 +142,64 @@ class ToolAgentLoop(AgentLoopBase):
         with log_file.open("a", encoding="utf-8") as f:
             f.write(log_block)
 
-        return log_block
+        turn_context = self._extract_turn_context(messages)
+        return (
+            f"\n=== {timestamp}Z env={env_idx} turn={turn_id} agent={agent_id} "
+            f"prompt_tokens={len(prompt_ids)} response_tokens={len(response_ids)} ===\n"
+            f"[TURN CONTEXT]\n{turn_context}\n\n"
+            f"[OUTPUT]\n{response_text}\n"
+        )
+
+    def _extract_turn_context(self, messages: list[dict[str, Any]]) -> str:
+        """Return only the current observation shown to the acting professor."""
+        user_content = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                user_content = str(msg.get("content", ""))
+                break
+
+        if not user_content:
+            return "(no user turn context found)"
+
+        marker = "=== YOUR TURN"
+        marker_idx = user_content.find(marker)
+        if marker_idx >= 0:
+            return user_content[marker_idx:].strip()
+        return user_content.strip()
+
+    def _format_game_log_prompt_header(
+        self,
+        system_prompts: dict[str, str] | None,
+        messages: list[dict[str, Any]],
+    ) -> str:
+        timestamp = datetime.utcnow().isoformat(timespec="seconds")
+        lines = [
+            f"\n{'='*70}",
+            f"=== GAME LOG RUN PROMPTS {timestamp}Z ===",
+            f"{'='*70}",
+            "System prompts logged once for this training process. Per-turn entries below log only the dynamic turn context.",
+        ]
+
+        if system_prompts:
+            for agent_id in sorted(system_prompts):
+                lines.extend([
+                    "",
+                    f"--- SYSTEM PROMPT agent={agent_id} ---",
+                    str(system_prompts[agent_id]).strip(),
+                ])
+        else:
+            system_content = ""
+            for msg in messages:
+                if msg.get("role") == "system":
+                    system_content = str(msg.get("content", ""))
+                    break
+            lines.extend([
+                "",
+                f"--- SYSTEM PROMPT agent=unknown ---",
+                system_content.strip() if system_content else "(no system prompt found)",
+            ])
+
+        return "\n".join(lines) + "\n"
 
     def _build_prompt_ids(self, messages: list[dict[str, Any]]) -> list[int]:
         """Build prompt ids while preserving the initial system prompt when truncating."""
@@ -265,14 +324,23 @@ class ToolAgentLoop(AgentLoopBase):
         # wrapper (which already returns messages + info) and new multi-agent
         # gym-style envs (e.g. AsyncTickerAdmissionsEnv) that return
         # (observations, infos_dict).
+        def _flatten_info(info_obj):
+            if isinstance(info_obj, dict) and info_obj:
+                first_val = next(iter(info_obj.values()))
+                if isinstance(first_val, dict) and "active_agent" in first_val:
+                    return first_val
+            return info_obj
+
         if is_val:
             messages, info = env.reset(agent_id=agent_id)
         else:
             messages, info = env.get_last_obs(agent_id=agent_id)
             if not messages:
                 messages, info = env.reset(agent_id=agent_id)
+        info = _flatten_info(info)
         if info and info.get("active_agent") is not None:
             agent_id = info.get("active_agent")
+        game_log_system_prompts = info.get("system_prompts") if isinstance(info, dict) else None
 
         metrics = {}
         request_id = uuid4().hex
@@ -293,9 +361,11 @@ class ToolAgentLoop(AgentLoopBase):
         game_entries = []
         log_this_game = (
             self.game_log_path is not None
+            and not is_val
             and env_idx == 0
-            and epoch >= 0
-            and epoch % self.game_log_interval == 0
+            and global_steps >= 0
+            and self.game_log_interval > 0
+            and global_steps % self.game_log_interval == 0
         )
         while True:
             with simple_timer("generate_sequences", metrics):
@@ -327,6 +397,7 @@ class ToolAgentLoop(AgentLoopBase):
                     env_idx=env_idx,
                     turn_id=num_turns,
                     agent_id=agent_id,
+                    messages=messages,
                     prompt_ids=prompt_ids,
                     response_ids=response_ids,
                 ),
@@ -349,11 +420,7 @@ class ToolAgentLoop(AgentLoopBase):
             # info may be a flat dict (single-agent env) or agent-keyed dict
             # (multi-agent env like hiring_env: {"prof_1": base_info, ...}).
             # Normalise to a flat dict for all downstream lookups.
-            _flat_info = info
-            if isinstance(info, dict) and info:
-                first_val = next(iter(info.values()))
-                if isinstance(first_val, dict) and "active_agent" in first_val:
-                    _flat_info = first_val  # unwrap agent-keyed dict
+            _flat_info = _flatten_info(info)
             if _flat_info and _flat_info.get("active_agent") is not None:
                 agent_id = _flat_info.get("active_agent")
             if isinstance(reward, dict):
@@ -392,7 +459,7 @@ class ToolAgentLoop(AgentLoopBase):
                 done=done,
                 num_turns=num_turns,
                 env_idx=env_idx,
-                agent_id=str(agent_id),
+                agent_id=str(acting_agent_id),
                 turn_id=num_turns,
             )
             num_turns += 1
@@ -463,6 +530,9 @@ class ToolAgentLoop(AgentLoopBase):
             game_log_file = Path(self.game_log_path)
             game_log_file.parent.mkdir(parents=True, exist_ok=True)
             with game_log_file.open("a", encoding="utf-8") as f:
+                if not self.__class__._game_log_prompt_written:
+                    f.write(self._format_game_log_prompt_header(game_log_system_prompts, messages))
+                    self.__class__._game_log_prompt_written = True
                 f.write(header + "".join(game_entries))
 
         return outputs

@@ -571,7 +571,17 @@ class AgentLoopWorker:
                 processor=self.processor,
             )
             env = self.val_env if is_val else self.env
-            outputs: AgentLoopOutput = await agent_loop.run(env, counter, env_idx, sampling_params, is_val, global_steps=trajectory["step"], **kwargs)
+            epoch = kwargs.pop("epoch", -1)
+            outputs: AgentLoopOutput = await agent_loop.run(
+                env,
+                counter,
+                env_idx,
+                sampling_params,
+                is_val,
+                global_steps=trajectory["step"],
+                epoch=epoch,
+                **kwargs,
+            )
 
             # Some AgentLoop may have already computed the reward score, e.g SWE-agent.
 
