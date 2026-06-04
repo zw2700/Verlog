@@ -1,3 +1,4 @@
 [submodule "verl/envs/hiring_env"]
 	path = verl/envs/hiring_env
 	url = git@github.com:WentseChen/hiring_env.git
+	branch = verlog-frank-dev
