@@ -469,15 +469,24 @@ class ToolAgentLoop(AgentLoopBase):
             # if num_turns == mini_batch_size + 1:
             #     break
 
-            prompt_ids = await self.loop.run_in_executor(
-                None,
-                lambda: self._build_prompt_ids(messages),
-            )
-
             is_full = await counter.increment.remote()
-            if done and is_val:
+            if done:
                 outputs.append(turn_data)
-                break
+                if is_val:
+                    break
+
+                # Training must continue filling the shared rollout counter,
+                # but the next generation must start from a fresh episode
+                # rather than the terminal observation returned with done=True.
+                messages, info = env.reset(agent_id=agent_id)
+                info = _flatten_info(info)
+                if info and info.get("active_agent") is not None:
+                    agent_id = info.get("active_agent")
+                prompt_ids = await self.loop.run_in_executor(
+                    None,
+                    lambda: self._build_prompt_ids(messages),
+                )
+                continue
             if is_full and not is_val:
                 # Training truncation path: append exactly one bootstrap sample
                 # so output cardinality stays aligned with trainer expectations.
@@ -501,6 +510,11 @@ class ToolAgentLoop(AgentLoopBase):
             else:
                 # Buffer not full or validation - append normal turn and continue
                 outputs.append(turn_data)
+
+            prompt_ids = await self.loop.run_in_executor(
+                None,
+                lambda: self._build_prompt_ids(messages),
+            )
 
         # Episode completed naturally (not truncated) - add final bootstrap turn
         # This happens when done=True from environment termination

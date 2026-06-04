@@ -25,6 +25,29 @@
 
 set -euo pipefail
 
+# ============================================================================
+# EXPERIMENT NOTES
+# Edit these strings before submitting a run. They are printed at the top of
+# logs/frank_<jobid>.out so each run documents what changed.
+# ============================================================================
+
+EXP_NOTES=(
+    "Fresh rollout generation during critic warmup steps 2-10; actor warmup gate unchanged."
+    "Compact game_log format: system prompts once, then per-turn context plus model output."
+    "Hiring parser is tolerant: malformed output defaults to WAIT; GROUP text is the only public/budgeted text; GROUP+VOTE is allowed as a composite turn."
+    "Training rollouts reset immediately on env done and continue from fresh episodes, preventing terminal-observation generations while preserving rollout batch size."
+)
+
+echo "=== Experiment Notes ==="
+if [ "${#EXP_NOTES[@]}" -eq 0 ]; then
+    echo "- (none)"
+else
+    for note in "${EXP_NOTES[@]}"; do
+        echo "- $note"
+    done
+fi
+echo "========================"
+
 echo "=== Job Information ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURMD_NODENAME"
@@ -212,7 +235,7 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     envs.env_name=async_ticker_admissions \
     +envs.env_config.professor_ids='["prof_1","prof_2","prof_3"]' \
     +envs.env_config.students_per_batch=5 \
-    +envs.env_config.token_budget=1000 \
+    +envs.env_config.token_budget=500 \
     +envs.env_config.feature_dim=5 \
     +envs.env_config.vote_threshold=0.5 \
     +envs.env_config.max_steps=50 \
