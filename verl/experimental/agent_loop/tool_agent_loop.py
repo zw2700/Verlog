@@ -470,23 +470,6 @@ class ToolAgentLoop(AgentLoopBase):
             #     break
 
             is_full = await counter.increment.remote()
-            if done:
-                outputs.append(turn_data)
-                if is_val:
-                    break
-
-                # Training must continue filling the shared rollout counter,
-                # but the next generation must start from a fresh episode
-                # rather than the terminal observation returned with done=True.
-                messages, info = env.reset(agent_id=agent_id)
-                info = _flatten_info(info)
-                if info and info.get("active_agent") is not None:
-                    agent_id = info.get("active_agent")
-                prompt_ids = await self.loop.run_in_executor(
-                    None,
-                    lambda: self._build_prompt_ids(messages),
-                )
-                continue
             if is_full and not is_val:
                 # Training truncation path: append exactly one bootstrap sample
                 # so output cardinality stays aligned with trainer expectations.
@@ -507,6 +490,23 @@ class ToolAgentLoop(AgentLoopBase):
                     outputs.append(bootstrap_turn)
                 bootstrap_added = True
                 break  # Exit loop after buffer truncation
+            if done:
+                outputs.append(turn_data)
+                if is_val:
+                    break
+
+                # Training must continue filling the shared rollout counter,
+                # but the next generation must start from a fresh episode
+                # rather than the terminal observation returned with done=True.
+                messages, info = env.reset(agent_id=agent_id)
+                info = _flatten_info(info)
+                if info and info.get("active_agent") is not None:
+                    agent_id = info.get("active_agent")
+                prompt_ids = await self.loop.run_in_executor(
+                    None,
+                    lambda: self._build_prompt_ids(messages),
+                )
+                continue
             else:
                 # Buffer not full or validation - append normal turn and continue
                 outputs.append(turn_data)

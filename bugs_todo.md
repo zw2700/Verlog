@@ -139,7 +139,9 @@ Validation still breaks on `done=True`. Training appends the terminal generated
 turn, immediately resets the env, and continues filling the shared rollout
 counter from a fresh episode. The loop no longer generates another model
 response from a terminal observation, while preserving the trainer's expected
-rollout batch size.
+rollout batch size. The shared rollout counter boundary is checked before the
+training terminal-reset path, so a boundary-crossing terminal turn cannot add
+one extra real rollout row.
 
 Original issue:
 

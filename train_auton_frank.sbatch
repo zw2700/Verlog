@@ -36,6 +36,7 @@ EXP_NOTES=(
     "Compact game_log format: system prompts once, then per-turn context plus model output."
     "Hiring parser is tolerant: malformed output defaults to WAIT; GROUP text is the only public/budgeted text; GROUP+VOTE is allowed as a composite turn."
     "Training rollouts reset immediately on env done and continue from fresh episodes, preventing terminal-observation generations while preserving rollout batch size."
+    "Shared rollout counter boundary now takes priority over terminal reset to prevent one-row gen_batch_output mismatches."
 )
 
 echo "=== Experiment Notes ==="
