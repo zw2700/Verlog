@@ -48,6 +48,53 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def aggregate_env_metrics(all_env_metrics: list[dict[str, Any]]) -> dict[str, float]:
+    """Aggregate per-episode env metrics and add per-rollout-step counters."""
+    all_env_metrics = [metrics for metrics in all_env_metrics if metrics]
+    if not all_env_metrics:
+        return {}
+
+    stats = {}
+
+    # Existing behavior: numeric per-episode metrics are averaged under env/{key}.
+    for key in all_env_metrics[0].keys():
+        values = [
+            metrics[key]
+            for metrics in all_env_metrics
+            if key in metrics and isinstance(metrics[key], (int, float))
+        ]
+        if values:
+            stats[f"env/{key}"] = float(np.mean(values))
+
+    episodes_rolled_out = len(all_env_metrics)
+    episodes_consensus = sum(
+        1
+        for metrics in all_env_metrics
+        if metrics.get("negotiation/consensus_reached") == 1
+    )
+    episodes_socially_optimal = sum(
+        1
+        for metrics in all_env_metrics
+        if metrics.get("outcome/chosen_student_rank_global") == 1
+    )
+
+    stats["env/step/episodes_rolled_out"] = float(episodes_rolled_out)
+    stats["env/step/episodes_consensus"] = float(episodes_consensus)
+    stats["env/step/episodes_socially_optimal"] = float(episodes_socially_optimal)
+    stats["env/step/socially_optimal_given_consensus_rate"] = (
+        episodes_socially_optimal / episodes_consensus
+        if episodes_consensus > 0
+        else 0.0
+    )
+    stats["env/step/socially_optimal_rate"] = (
+        episodes_socially_optimal / episodes_rolled_out
+        if episodes_rolled_out > 0
+        else 0.0
+    )
+
+    return stats
+
+
 @ray.remote
 class Counter:
     def __init__(self):
@@ -1033,13 +1080,7 @@ class AgentLoopManager:
         all_env_metrics = [m.get("env_metrics", {}) for chunk in metrics for m in chunk]
         all_env_metrics = [em for em in all_env_metrics if em]
         if all_env_metrics:
-            all_keys = set()
-            for em in all_env_metrics:
-                all_keys.update(em.keys())
-            for key in all_keys:
-                values = [m[key] for m in all_env_metrics if key in m and isinstance(m[key], (int, float))]
-                if values:
-                    loop_stats[f"env/{key}"] = float(np.mean(values))
+            loop_stats.update(aggregate_env_metrics(all_env_metrics))
 
             # Conditional aggregation by consensus_reached. Diagnostic for the critic-warmup
             # phase: lets you see whether the value function is being trained mostly on

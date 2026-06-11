@@ -1199,24 +1199,20 @@ class RayPPOTrainer:
                 is_last_step = self.global_steps >= self.total_training_steps
                 with marked_timer("step", timing_raw):
                     
-                    # skip rollout for step 2 to step `critic_warmup`
-                    is_first_step = self.global_steps == 1
-                    is_warmup = self.config.trainer.critic_warmup >= self.global_steps
-                    
-                    if not is_warmup or is_first_step:
-                    
-                        # generate a batch
-                        with marked_timer("gen", timing_raw, color="red"):
-                            if not self.async_rollout_mode:
-                                gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
-                            else:
-                                gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch)
+                    # Generate fresh rollouts every step. During critic warmup the
+                    # actor update is still skipped below, but the critic should not
+                    # repeatedly train on stale trajectories from step 1.
+                    with marked_timer("gen", timing_raw, color="red"):
+                        if not self.async_rollout_mode:
+                            gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                        else:
+                            gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch)
 
-                            timing_raw.update(gen_batch_output.meta_info["timing"])
-                            gen_batch_output.meta_info.pop("timing", None)
-                            
-                            metrics.update(gen_batch_output.meta_info["loop_stats"])
-                            gen_batch_output.meta_info.pop("loop_stats", None)
+                        timing_raw.update(gen_batch_output.meta_info["timing"])
+                        gen_batch_output.meta_info.pop("timing", None)
+                        
+                        metrics.update(gen_batch_output.meta_info["loop_stats"])
+                        gen_batch_output.meta_info.pop("loop_stats", None)
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         if self.reward_fn is None:
@@ -1238,7 +1234,7 @@ class RayPPOTrainer:
                             batch.batch["reward_baselines"] = reward_baseline_tensor
 
                             del gen_baseline_batch, gen_baseline_output
-                    # repeat to align with repeated responses in rollout
+                    # repeat to align with repeated responses in rollout (>1 for GRPO)
                     batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     
                     # assert batch_size should be equal to real batch size + agent_num * num_envs"

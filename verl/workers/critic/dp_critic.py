@@ -253,7 +253,7 @@ class DataParallelPPOCritic(BasePPOCritic):
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
 
-        for _ in range(self.config.ppo_epochs):
+        for epoch_idx in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
@@ -283,8 +283,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                         cliprange_value=self.config.cliprange_value,
                         loss_agg_mode=self.config.loss_agg_mode,
                     )
-                    
-                    # Calculate off-policy metrics
+
                     off_policy_metrics = get_off_policy_metric(
                         returns=returns,
                         vpreds=vpreds,
@@ -292,9 +291,8 @@ class DataParallelPPOCritic(BasePPOCritic):
                         values=values,
                         cliprange_value=self.config.cliprange_value
                     )
-                    
+
                     if self.config.use_dynamic_bsz:
-                        # relative to the dynamic bsz
                         loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
                         loss = vf_loss * loss_scale_factor
                     else:
@@ -310,10 +308,7 @@ class DataParallelPPOCritic(BasePPOCritic):
                             "critic/vpred_mean": masked_mean(vpreds, response_mask).detach().item(),
                         }
                     )
-                    
-                    # Add off-policy metrics to micro_batch_metrics
                     micro_batch_metrics.update(off_policy_metrics)
-
                     append_to_dict(metrics, micro_batch_metrics)
 
                 grad_norm = self._optimizer_step()
