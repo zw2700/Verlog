@@ -32,11 +32,7 @@ set -euo pipefail
 # ============================================================================
 
 EXP_NOTES=(
-    "Fresh rollout generation during critic warmup steps 2-10; actor warmup gate unchanged."
-    "Compact game_log format: system prompts once, then per-turn context plus model output."
-    "Hiring parser is tolerant: malformed output defaults to WAIT; GROUP text is the only public/budgeted text; GROUP+VOTE is allowed as a composite turn."
-    "Training rollouts reset immediately on env done and continue from fresh episodes, preventing terminal-observation generations while preserving rollout batch size."
-    "Shared rollout counter boundary now takes priority over terminal reset to prevent one-row gen_batch_output mismatches."
+    "Add new metrics under env/step, counts and fraction of socially optimum choices."
 )
 
 echo "=== Experiment Notes ==="
