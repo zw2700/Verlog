@@ -1,113 +1,81 @@
 #!/bin/bash
-#SBATCH --job-name=marl_training
+#SBATCH --job-name=marl_exp
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
-#SBATCH --partition=general              # Use 'general' partition for production runs
-#SBATCH --qos=qos_general                # QOS matching the partition
-# #SBATCH --nodelist=gpu17               # Uncomment to force a specific node (debugging)
+#SBATCH --partition=general
+#SBATCH --qos=qos_general
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=32               # Adjust based on available CPUs
-#SBATCH --mem=200G                       # Memory allocation
-#SBATCH --time=47:59:00                  # Max time for general partition is 2d (48h)
-#SBATCH --gres=gpu:a6000:4               # Request 4 A6000 GPUs (can also use v100, a5000, rtx_2080_ti)
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=200G
+#SBATCH --time=47:59:00
+#SBATCH --gres=gpu:a6000:4
 
-# For debugging/testing, use these settings instead:
-# #SBATCH --partition=debug
-# #SBATCH --qos=qos_debug
-# #SBATCH --time=02:00:00
-# #SBATCH --gres=gpu:a6000:2
-
-# For long runs with preemption tolerance, use these settings:
-# #SBATCH --partition=preempt
-# #SBATCH --qos=qos_preempt
-# #SBATCH --time=7-00:00:00
-# #SBATCH --gres=gpu:a6000:4
+# Ablation variant D: ability vectors VISIBLE, utility_mode=exp (exp(linear utility) - 1). Sharpens reward gradient.
+# Same hyperparams as train_auton.sbatch; only env_config differs across the three variants.
 
 echo "=== Job Information ==="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURMD_NODENAME"
 echo "Start time: $(date)"
 echo "Working directory: $SLURM_SUBMIT_DIR"
+echo "Ablation: VISIBLE + EXP (exp(util)-1 reward sharpening)"
 echo "======================="
-
-# ============================================================================
-# SETUP ENVIRONMENT (COMMON SCRIPT)
-# ============================================================================
 
 PROJECT_DIR="/zfsauton/scratch/cpulling/Verlog"
 ENV_PATH="/zfsauton/scratch/cpulling/conda_envs/verlog"
 DATA_DIR="/zfsauton/scratch/cpulling/data/gsm8k"
 
-# Source common setup script
 SETUP_SCRIPT="$PROJECT_DIR/setup_environment.sh"
-if [ ! -f "$SETUP_SCRIPT" ]; then
-    echo "❌ ERROR: Setup script not found at $SETUP_SCRIPT"
-    exit 1
-fi
-
 source "$SETUP_SCRIPT" "$PROJECT_DIR" "$ENV_PATH" "$DATA_DIR"
-
-# Python binary is now set by setup script
 PYTHON_BIN="$ENV_PATH/bin/python3"
 
-# Set up environment variables
 export HF_HOME="/zfsauton/scratch/${USER}/models_cache"
 mkdir -p "$HF_HOME"
-
-export TMPDIR="/zfsauton/scratch/${USER}/tmp"
+export TMPDIR="/zfsauton/scratch/${USER}/tmp/job_${SLURM_JOB_ID}"
 export RAY_TMPDIR="$TMPDIR"
 mkdir -p "$TMPDIR"
 
-# Increase file descriptor and process limits (crucial for Ray/vLLM)
 ulimit -n 65535 2>/dev/null || true
 ulimit -u 65535 2>/dev/null || true
 
-# Clean up any stale Ray processes from previous runs
 echo "=== Cleaning up stale Ray processes ==="
+# Per-job TMPDIR isolates the ray session dir from concurrent jobs — avoids the
+# 'rm -rf ${TMPDIR}/ray' delete-race that killed sibling jobs' raylet sockets.
 $PYTHON_BIN -m ray stop --force 2>/dev/null || true
 pkill -9 -f "ray::" 2>/dev/null || true
-rm -rf /tmp/ray 2>/dev/null || true
-rm -rf ${TMPDIR}/ray 2>/dev/null || true
+rm -rf "${TMPDIR}/ray" 2>/dev/null || true
+trap 'rm -rf "${TMPDIR}"' EXIT
 
-# Ray configuration
 export RAY_NUM_CPUS=${SLURM_CPUS_PER_TASK}
 export RAY_INCLUDE_DASHBOARD=0
 export RAY_DISABLE_DASHBOARD=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
-
-# Ray timeout and debugging settings
 export RAY_raylet_startup_timeout_ms=120000
 export RAY_gcs_server_request_timeout_seconds=60
 export RAY_BACKEND_LOG_LEVEL=warning
 
-# GPU configuration
-NUM_GPUS_PER_NODE=4  # Match this to --gres setting
+NUM_GPUS_PER_NODE=4
 unset ROCR_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((NUM_GPUS_PER_NODE-1)))
 
-# vLLM configuration
 export VLLM_USE_V1=1
 export VERL_AUTO_PADDING=TRUE
 
-# WandB API Key - sourced from ~/.wandb_key (do not hardcode here; key would
-# leak when this sbatch is committed/shared).
 if [ ! -f "$HOME/.wandb_key" ]; then
     echo "ERROR: ~/.wandb_key missing" >&2
     exit 1
 fi
 export WANDB_API_KEY="$(cat "$HOME/.wandb_key" | tr -d '[:space:]')"
 
-# Project paths
 CONFIG_PATH="$PROJECT_DIR/examples/sglang_multiturn/config"
-LOG_PATH="${VERL_AGENT_IO_LOG_PATH:-$PROJECT_DIR/logs/agent_model_train_auton_${SLURM_JOB_ID}.log}"
+LOG_PATH="${VERL_AGENT_IO_LOG_PATH:-$PROJECT_DIR/logs/agent_model_exp_${SLURM_JOB_ID}.log}"
 mkdir -p "$(dirname "$LOG_PATH")"
 : > "$LOG_PATH"
 export VERL_AGENT_IO_LOG_PATH="$LOG_PATH"
-export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_train_auton_${SLURM_JOB_ID}.log"
+export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_exp_${SLURM_JOB_ID}.log"
 
-# Training hyperparameters
 NUM_ENVS=32
 BATCH_SIZE=256
 MINI_BATCH_SIZE=$((BATCH_SIZE))
@@ -116,21 +84,11 @@ FORWARD_BATCH_SIZE=$((4 * MICRO_BATCH_SIZE))
 OFFLOAD=false
 PPO_EPOCHS=2
 
-echo "=== Training Configuration ==="
-echo "GPUs: $NUM_GPUS_PER_NODE"
-echo "CPUs: $SLURM_CPUS_PER_TASK"
-echo "Memory: $SLURM_MEM_PER_NODE MB"
-echo "Num Envs: $NUM_ENVS"
-echo "Batch Size: $BATCH_SIZE"
-echo "Mini Batch Size: $MINI_BATCH_SIZE"
-echo "Micro Batch Size: $MICRO_BATCH_SIZE"
-echo "=============================="
-
 EXP_LOG_PY="$PROJECT_DIR/claude-tools/exp_logging/experiment_log.py"
 source "$PROJECT_DIR/claude-tools/exp_logging/sbatch_logging.sh"
-EXP_WHAT_CHANGED="${EXP_WHAT_CHANGED:-parser recovery + observable history (A+B): multi-tag/pre-THINK/case-insensitive recovery to highest-priority valid tag with malformed=True (0.05 penalty); empty <WAIT_FOR> -> wait, no penalty; raw added to _PUBLIC_MESSAGE_TYPES; corrective annotations rendered for raw/discuss/malformed turns so the agent observes its own formatting penalties}"
+EXP_WHAT_CHANGED="${EXP_WHAT_CHANGED:-Ablation D: show_ability_vectors=true, utility_mode=exp = exp(linear utility) - 1. New per-episode randomized turn order + new consensus_quality metrics. Compare against visible (linear) and hidden.}"
 EXP_WANDB_PROJECT=wait_ratio_exps
-EXP_NAME="train_auton_${SLURM_JOB_ID}"
+EXP_NAME="marl_exp_${SLURM_JOB_ID}"
 EXP_PROJECT_DIR="$PROJECT_DIR"
 EXP_MODEL=Qwen/Qwen2.5-3B-Instruct
 EXP_ADV_ESTIMATOR=gae
@@ -149,7 +107,6 @@ EXP_FEATURE_DIM=5
 exp_log_start
 trap exp_log_finalize EXIT
 
-# Run training
 $PYTHON_BIN -m verl.trainer.main_ppo \
     --config-path="$CONFIG_PATH" \
     --config-name='gsm8k_multiturn_grpo' \
@@ -188,7 +145,7 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     trainer.critic_warmup_batch_divide_ratio=4 \
     trainer.logger='["console","wandb"]' \
     trainer.project_name=wait_ratio_exps \
-    trainer.experiment_name="marl_auton_${SLURM_JOB_ID}" \
+    trainer.experiment_name="marl_exp_${SLURM_JOB_ID}" \
     trainer.n_gpus_per_node=${NUM_GPUS_PER_NODE} \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
@@ -203,6 +160,8 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     +envs.env_config.feature_dim=5 \
     +envs.env_config.vote_threshold=0.5 \
     +envs.env_config.max_steps=100 \
+    +envs.env_config.show_ability_vectors=true \
+    +envs.env_config.utility_mode=exp \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384 \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=16384 \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=16384 \
@@ -223,10 +182,8 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     $@
 
 EXIT_CODE=$?
-
 echo "=== Job Completion ==="
 echo "End time: $(date)"
 echo "Exit code: $EXIT_CODE"
 echo "======================"
-
 exit $EXIT_CODE

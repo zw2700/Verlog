@@ -357,7 +357,13 @@ class vLLMHttpServer:
             )
             prompt_ids = prompt_ids[-max_prompt_len:]
         max_tokens = self.config.max_model_len - len(prompt_ids)
-        sampling_params["logprobs"] = 0 if sampling_params.pop("logprobs", False) else None
+        _lp = sampling_params.pop("logprobs", False)
+        if _lp is False or _lp is None:
+            sampling_params["logprobs"] = None
+        elif _lp is True:
+            sampling_params["logprobs"] = 0
+        else:
+            sampling_params["logprobs"] = int(_lp)
         sampling_params.setdefault("repetition_penalty", self.config.get("repetition_penalty", 1.0))
         sampling_params = SamplingParams(max_tokens=max_tokens, **sampling_params)
         prompt = TokensPrompt(
@@ -373,9 +379,16 @@ class vLLMHttpServer:
 
         token_ids = final_res.outputs[0].token_ids
         log_probs = None
+        top_logprobs = None
         if sampling_params.logprobs is not None:
-            log_probs = [logprobs[token_ids[i]].logprob for i, logprobs in enumerate(final_res.outputs[0].logprobs)]
-        return TokenOutput(token_ids=token_ids, log_probs=log_probs)
+            raw = final_res.outputs[0].logprobs
+            log_probs = [raw[i][token_ids[i]].logprob for i in range(len(token_ids))]
+            if sampling_params.logprobs and sampling_params.logprobs > 0:
+                top_logprobs = [
+                    {int(tid): float(lp.logprob) for tid, lp in raw[i].items()}
+                    for i in range(len(token_ids))
+                ]
+        return TokenOutput(token_ids=token_ids, log_probs=log_probs, top_logprobs=top_logprobs)
 
     async def wake_up(self):
         if self.rollout_mode == RolloutMode.HYBRID:

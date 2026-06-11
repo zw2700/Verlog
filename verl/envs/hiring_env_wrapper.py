@@ -27,12 +27,23 @@ class AsyncTickerEnvWrapper(gym.Wrapper):
         self.last_info = None
         self.episode_done = False
 
-    def get_last_obs(self):
-        """Return last observation (used by VERL for resuming after reset)."""
+    def get_last_obs(self, agent_id=None):
+        """Return last observation (used by VERL for resuming after reset).
+
+        `agent_id` is accepted for compatibility with verl's tool_agent_loop /
+        multi_tool_agent_loop, which always pass it through. The hiring env
+        manages active-agent selection internally (info["active_agent"]), so
+        we ignore the hint here.
+        """
         return self.last_obs, self.last_info
 
-    def reset(self, **kwargs):
-        """Reset environment and cache initial observation."""
+    def reset(self, agent_id=None, **kwargs):
+        """Reset environment and cache initial observation.
+
+        `agent_id` is accepted for verl agent-loop compatibility but dropped
+        before delegating: AsyncTickerAdmissionsEnv.reset() takes no args and
+        picks `active_agent` itself.
+        """
         obs, info = self.env.reset(**kwargs)
         self.last_obs = obs
         self.last_info = info
@@ -53,7 +64,11 @@ class AsyncTickerEnvWrapper(gym.Wrapper):
         self.last_info = info
 
         # Track episode status
-        if terminated or truncated:
+        # NOTE: terminated/truncated may be per-agent dicts; a non-empty dict is
+        # always truthy, so check actual values — not the dict itself.
+        scalar_term = any(terminated.values()) if isinstance(terminated, dict) else bool(terminated)
+        scalar_trunc = any(truncated.values()) if isinstance(truncated, dict) else bool(truncated)
+        if scalar_term or scalar_trunc:
             self.episode_done = True
 
         return obs, reward, terminated, truncated, info

@@ -34,6 +34,8 @@ class TokenOutput(BaseModel):
     """response token ids"""
     log_probs: Optional[list[float]] = None
     """logprobs of response token ids"""
+    top_logprobs: Optional[list[dict[int, float]]] = None
+    """Per-position top-K {token_id: logprob}. Populated when sampling logprobs > 0."""
 
 
 class RolloutMode(Enum):

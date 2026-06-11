@@ -18,6 +18,7 @@ import os
 import queue
 import random
 import threading
+import time
 from abc import ABC, abstractmethod
 from concurrent.futures import Future
 from typing import Any, Optional
@@ -481,6 +482,8 @@ class AgentLoopWorker:
         self.val_env = make_env(self.config.envs.env_name, self.config.envs.task, self.config, tokenizer=self.tokenizer)
         self.val_env.reset()
 
+    _PROFILE = os.environ.get("VERL_PROFILE_AGENT_LOOP", "0") == "1"
+
     async def generate_sequences(self, batch: DataProto, counter, env_idx: int) -> DataProto:
         """Generate sequences from agent loop.
 
@@ -535,9 +538,19 @@ class AgentLoopWorker:
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
             is_val = batch.meta_info.get("validate", False)
             tasks.append(asyncio.create_task(self._run_agent_loop(sampling_params, trajectory_info[i], counter, env_idx, is_val, epoch=epoch, **kwargs)))
+        _t0 = time.perf_counter() if self._PROFILE else None
         outputs = await asyncio.gather(*tasks)
+        _t_gather = (time.perf_counter() - _t0) if self._PROFILE else 0.0
 
+        _t1 = time.perf_counter() if self._PROFILE else None
         output = self._postprocess(outputs[0])
+        if self._PROFILE:
+            print(
+                f"[AGENT_LOOP_WORKER env_idx={env_idx} batch={len(batch)} "
+                f"gather_s={_t_gather:.2f} postprocess_s={time.perf_counter()-_t1:.3f} "
+                f"turns={len(outputs[0])}]",
+                flush=True,
+            )
         return output
 
     async def _run_agent_loop(
@@ -571,7 +584,17 @@ class AgentLoopWorker:
                 processor=self.processor,
             )
             env = self.val_env if is_val else self.env
-            outputs: AgentLoopOutput = await agent_loop.run(env, counter, env_idx, sampling_params, is_val, global_steps=trajectory["step"], **kwargs)
+            epoch = kwargs.pop("epoch", -1)
+            outputs: AgentLoopOutput = await agent_loop.run(
+                env,
+                counter,
+                env_idx,
+                sampling_params,
+                is_val,
+                global_steps=trajectory["step"],
+                epoch=epoch,
+                **kwargs,
+            )
 
             # Some AgentLoop may have already computed the reward score, e.g SWE-agent.
 
@@ -998,11 +1021,22 @@ class AgentLoopManager:
         loop_stats["agent_loop/loop_counts/mean"] = loop_counts.mean()
         loop_stats["agent_loop/loop_counts/std"] = loop_counts.std()
 
-        # Aggregate env metrics (only present on done steps, one per episode)
+        # Aggregate env metrics (only present on done steps, one per episode).
+        # Two bugs avoided here:
+        #   1. Iterate the UNION of keys across episodes, not just episode[0]'s.
+        #      Some metrics (consensus_quality/*, schelling/*) are only emitted
+        #      on consensus episodes — if episode[0] is no-consensus they would
+        #      be silently dropped.
+        #   2. isinstance(v, (int, float)) — Nones get filtered (bool is int
+        #      subclass, OK). This is how we avoid -1 / None sentinel pollution
+        #      now that env.py emits None for "not applicable" instead of -1.
         all_env_metrics = [m.get("env_metrics", {}) for chunk in metrics for m in chunk]
         all_env_metrics = [em for em in all_env_metrics if em]
         if all_env_metrics:
-            for key in all_env_metrics[0].keys():
+            all_keys = set()
+            for em in all_env_metrics:
+                all_keys.update(em.keys())
+            for key in all_keys:
                 values = [m[key] for m in all_env_metrics if key in m and isinstance(m[key], (int, float))]
                 if values:
                     loop_stats[f"env/{key}"] = float(np.mean(values))
@@ -1023,7 +1057,10 @@ class AgentLoopManager:
                 for label, subset in (("env_consensus", consensus_eps), ("env_no_consensus", no_consensus_eps)):
                     if not subset:
                         continue
-                    for key in subset[0].keys():
+                    subset_keys = set()
+                    for em in subset:
+                        subset_keys.update(em.keys())
+                    for key in subset_keys:
                         values = [m[key] for m in subset if key in m and isinstance(m[key], (int, float))]
                         if values:
                             loop_stats[f"{label}/{key}"] = float(np.mean(values))
