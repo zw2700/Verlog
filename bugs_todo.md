@@ -1,5 +1,95 @@
 # Bugs / TODOs
 
+## Training rollout: non-closing professors receive zero outcome reward — fixed
+
+Status: fixed in `verl/experimental/agent_loop/tool_agent_loop.py`. At each
+episode end during training, every non-closing professor's own terminal
+utility is added to their last turn of that episode and that row is marked
+`done=True` (closing their GAE chain at the episode boundary — previously
+only the closer's chain had a `done` flag, so other agents' values
+bootstrapped across episodes). The closer's utility stays on their real
+terminal row (no double-counting). A professor with zero turns in an episode
+gets no row and their utility for that episode is undeliverable (acceptable:
+no action, no credit). Validation: the per-professor bootstrap rows now carry
+each agent's OWN utility instead of the closer's `scalar_reward` replicated,
+so `val/mean_rewards` is a true per-agent metric. Non-terminal truncation
+bootstraps stay 0.0; the boundary case where a terminal turn also fills the
+rollout counter routes utilities onto the truncation bootstrap rows (see
+Implementation below). Was present on all branches (merge base,
+verlog-frank-dev, verlog-merge-jun26) — not a merge artifact. NOTE: changes
+the training signal globally; flag to collaborators.
+
+Issue:
+
+At episode end, `env.step()` returns a per-agent utility dict (e.g.
+`{prof_1: 2.3, prof_2: 0.9, prof_3: 1.7}`), but only the utility of the
+ACTING agent on the terminal turn (the professor whose vote closed
+consensus) ever reaches a training row:
+
+- `verl/experimental/agent_loop/tool_agent_loop.py`
+  - `scalar_reward = float(reward.get(acting_agent_id, sum(reward.values())))`
+  - terminal turn row gets the closer's utility; everyone else's is dropped.
+  - end-of-episode bootstrap rows (one per professor, `done=True`) carry
+    `rewards=0.0` in training — the natural slot for per-agent utility is
+    unused.
+- `verl/trainer/ppo/ray_trainer.py`
+  - `get_multiagent_episode_structure()` groups GAE chains by
+    `(env_idx, agent_id)`, so each professor's turns form an isolated
+    sequence. The closer's terminal reward does NOT propagate into other
+    professors' chains.
+
+Effect:
+
+- Per episode, only the consensus-closing professor's chain receives any
+  outcome reward; the other professors' chains end with 0.0 (`done=True`
+  bootstrap rows) — zero learning signal from the episode outcome.
+- `reward_mode` does not mitigate this: group/combined only change what the
+  closer's chain sees; the other chains still see nothing.
+- Cooperation behaviors performed by non-closers (conceding, persuading,
+  early constructive votes) are never directly rewarded — bad for a
+  cooperation-focused project.
+- ~2/3 of collected turns train against a critic fitted to all-zero returns;
+  their advantages reduce to format/invalid penalties only.
+- Validation mirror image: val bootstrap rows give EVERY professor the
+  closer's reward (`rewards=scalar_reward if is_val else 0.0`), so
+  `val/mean_rewards` reports the closer's reward replicated per agent.
+
+Implementation (in `tool_agent_loop.py::ToolAgentLoop.run`):
+
+The rollout loop now handles `done` BEFORE the `is_full` truncation exit, so a
+terminal turn is recorded the same way whether or not it also fills the
+counter:
+
+1. On any terminal turn, the real closing-action row (`turn_data`) is appended
+   — it carries the closing agent's own utility. The other professors'
+   utilities are backpatched onto their last real turn of this episode, and
+   those rows are marked `done=True` (closing each agent's GAE chain at the
+   episode boundary — previously only the closer's row had `done` set, so other
+   agents' values bootstrapped across episodes).
+2. Then, if the counter is full, one value-carrier bootstrap row per agent is
+   appended and the loop breaks. Because `turn_data` was appended first and the
+   bootstrap rows get a higher `turn_id`,
+   `remove_last_turn_in_episode_multiagent` drops the bootstrap rows and keeps
+   `turn_data` as an interior row — so the closer's closing-action row and its
+   utility survive into training.
+
+Why utilities must land on interior real rows (not bootstrap rows):
+`compute_gae_advantage_return_core` forces the last row of every (env, agent)
+chain to advantage 0 and never reads its reward (the last row is a value
+carrier only; `ray_trainer.py` then drops it). In real training the loop only
+ever exits via truncation, so every agent always ends with a bootstrap row —
+making all real rows, including closing-action rows, interior.
+
+Non-terminal truncation (the counter fills mid-episode) adds no utilities — the
+episode is incomplete, so there is no terminal reward; bootstrap rows carry 0.0.
+
+Validation (natural-end bootstrap loop): each professor's bootstrap row carries
+that professor's OWN utility instead of the closer's `scalar_reward` replicated
+(the val metric reads the last row per (env, agent) directly, not via GAE).
+
+A professor with zero turns in an episode has no row to attach to; their
+utility for that episode is undeliverable (acceptable: no action, no credit).
+
 ## Hiring env: budget accounting mismatch — fixed
 
 Status: fixed in `verl/envs/hiring_env/env.py`. Shared budget now advances

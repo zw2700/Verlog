@@ -459,6 +459,12 @@ class ToolAgentLoop(AgentLoopBase):
         reward = 0.0
         is_full = False
         bootstrap_added = False
+        # Index into `outputs` of each agent's most recent turn in the CURRENT
+        # episode. Used at episode end to route every professor's own terminal
+        # utility into their own (env_idx, agent_id) GAE chain — otherwise only
+        # the consensus-closing agent's utility ever reaches a training row
+        # (see bugs_todo.md: non-closing professors receive zero outcome reward).
+        episode_last_row: dict[str, int] = {}
         game_entries = []
         log_this_game = (
             self.game_log_path is not None
@@ -597,10 +603,43 @@ class ToolAgentLoop(AgentLoopBase):
 
             with _phase(profile, "counter_increment"):
                 is_full = await counter.increment.remote()
+            # Record this turn's row. We handle `done` BEFORE the truncation
+            # exit so the real closing-action row is always kept (even when the
+            # closing turn is also the one that fills the counter): it carries
+            # the closing agent's own utility and stays an interior row once the
+            # value-carrier bootstrap rows are appended after it.
+            if done:
+                outputs.append(turn_data)
+
+                # Route every other professor's terminal utility onto their last
+                # turn of this episode (an interior row of their (env, agent)
+                # GAE chain) and mark it done=True. The closing agent's utility
+                # already rides on turn_data above (skip them). done=True closes
+                # each chain at the episode boundary — otherwise GAE bootstraps
+                # values across episodes (only the closer's row had done set).
+                # Utilities must NOT go on bootstrap rows: GAE forces the last
+                # row of each chain to advantage 0 and never reads its reward
+                # (value carrier only — see compute_gae_advantage_return_core).
+                if isinstance(reward, dict):
+                    for other_agent, other_reward in reward.items():
+                        if str(other_agent) == str(acting_agent_id):
+                            continue
+                        row_idx = episode_last_row.get(str(other_agent))
+                        if row_idx is not None:
+                            outputs[row_idx].rewards += float(other_reward)
+                            outputs[row_idx].done = True
+                episode_last_row = {}
+            elif not (is_full and not is_val):
+                # Normal (non-terminal, non-truncation) turn.
+                outputs.append(turn_data)
+                episode_last_row[str(acting_agent_id)] = len(outputs) - 1
+
             if is_full and not is_val:
-                # Training truncation path: append exactly one bootstrap sample
-                # so output cardinality stays aligned with trainer expectations.
-                # for loop over all agents
+                # Buffer full: append one value-carrier bootstrap row per agent
+                # so every (env, agent) chain ends with a strippable terminal
+                # row (removed before training; reward ignored by GAE, kept 0.0).
+                # A terminal turn_data appended above stays interior (bootstrap
+                # rows get the higher turn_id and are the ones dropped).
                 for end_agent_id in range(3):
                     boot_resp_ids = [outputs[-1].response_ids[0]] if outputs else [151645]
                     bootstrap_turn = AgentLoopOutput(
@@ -619,11 +658,10 @@ class ToolAgentLoop(AgentLoopBase):
                     outputs.append(bootstrap_turn)
                 bootstrap_added = True
                 break  # Exit loop after buffer truncation
+
             if done:
-                outputs.append(turn_data)
                 if is_val:
                     break
-
                 # Training must continue filling the shared rollout counter,
                 # but the next generation must start from a fresh episode
                 # rather than the terminal observation returned with done=True.
@@ -636,9 +674,6 @@ class ToolAgentLoop(AgentLoopBase):
                     lambda: self._build_prompt_ids(messages),
                 )
                 continue
-            else:
-                # Buffer not full or validation - append normal turn and continue
-                outputs.append(turn_data)
 
             prompt_ids = await self.loop.run_in_executor(
                 None,
@@ -650,6 +685,19 @@ class ToolAgentLoop(AgentLoopBase):
         if not bootstrap_added:
             # for loop over all agents
             for end_agent_id in range(3):
+                boot_agent_id = f"prof_{end_agent_id+1}"
+                # Validation: each agent's bootstrap row carries that agent's
+                # OWN terminal utility (the val metric reads the last row per
+                # (env, agent)). Previously every agent got the closer's
+                # scalar_reward, so val/mean_rewards was the closer's reward
+                # replicated per agent.
+                if is_val:
+                    if isinstance(reward, dict):
+                        boot_reward = float(reward.get(boot_agent_id, 0.0))
+                    else:
+                        boot_reward = scalar_reward
+                else:
+                    boot_reward = 0.0
                 boot_resp_ids = [outputs[-1].response_ids[0]] if outputs else [151645]
                 bootstrap_turn = AgentLoopOutput(
                     prompt_ids=last_prompt_ids,
@@ -657,11 +705,11 @@ class ToolAgentLoop(AgentLoopBase):
                     response_mask=[1],
                     response_logprobs=[0.0] * len(boot_resp_ids),
                     metrics=dict(),
-                    rewards=scalar_reward if is_val else 0.0,
+                    rewards=boot_reward,
                     done=True,
                     num_turns=num_turns,
                     env_idx=env_idx,
-                    agent_id=f"prof_{end_agent_id+1}",
+                    agent_id=boot_agent_id,
                     turn_id=num_turns,
                 )
                 outputs.append(bootstrap_turn)
