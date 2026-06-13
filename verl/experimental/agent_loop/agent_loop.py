@@ -56,8 +56,14 @@ def aggregate_env_metrics(all_env_metrics: list[dict[str, Any]]) -> dict[str, fl
 
     stats = {}
 
-    # Existing behavior: numeric per-episode metrics are averaged under env/{key}.
-    for key in all_env_metrics[0].keys():
+    # Numeric per-episode metrics are averaged under env/{key}. Iterate the
+    # union of keys across episodes — some metrics (consensus_quality/*,
+    # schelling/*) are only emitted on consensus episodes and would be
+    # silently dropped if episode[0] happens to lack them.
+    all_keys = set()
+    for metrics in all_env_metrics:
+        all_keys.update(metrics.keys())
+    for key in sorted(all_keys):
         values = [
             metrics[key]
             for metrics in all_env_metrics
