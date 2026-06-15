@@ -111,8 +111,11 @@ class Counter:
     async def increment(self, n=1):
         """Increment counter by n in a thread-safe manner."""
         async with self.lock:
+            if self.num_turns + n > self.batch_size:
+                return False, True
             self.num_turns += n
-            return self.num_turns > self.batch_size 
+            is_full = self.num_turns >= self.batch_size
+            return True, is_full
 
     async def reset(self, batch_size):
         """Reset counter to 0 in a thread-safe manner."""

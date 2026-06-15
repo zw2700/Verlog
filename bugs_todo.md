@@ -14,8 +14,9 @@ no action, no credit). Validation: the per-professor bootstrap rows now carry
 each agent's OWN utility instead of the closer's `scalar_reward` replicated,
 so `val/mean_rewards` is a true per-agent metric. Non-terminal truncation
 bootstraps stay 0.0; the boundary case where a terminal turn also fills the
-rollout counter routes utilities onto the truncation bootstrap rows (see
-Implementation below). Was present on all branches (merge base,
+rollout counter keeps the real terminal row, routes utilities onto real
+per-agent rows, then appends zero-reward bootstrap rows (see Implementation
+below). Was present on all branches (merge base,
 verlog-frank-dev, verlog-merge-jun26) — not a merge artifact. NOTE: changes
 the training signal globally; flag to collaborators.
 
@@ -82,6 +83,14 @@ making all real rows, including closing-action rows, interior.
 
 Non-terminal truncation (the counter fills mid-episode) adds no utilities — the
 episode is incomplete, so there is no terminal reward; bootstrap rows carry 0.0.
+
+Follow-up counter race fixed: preserving the real terminal row exposed a
+pre-existing async rollout race. Previously, workers checked whether the shared
+counter was full before generation but only incremented after generation/env.step;
+multiple workers could pass the check concurrently and append extra real rows
+past `gen_batch_size`, producing errors like `352` expected rows vs `354`
+generated rows. `Counter.increment()` is now used as a reservation before
+generation, so over-limit workers stop before model generation or env mutation.
 
 Validation (natural-end bootstrap loop): each professor's bootstrap row carries
 that professor's OWN utility instead of the closer's `scalar_reward` replicated

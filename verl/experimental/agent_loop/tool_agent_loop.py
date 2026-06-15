@@ -264,6 +264,56 @@ class ToolAgentLoop(AgentLoopBase):
             return user_content[marker_idx:].strip()
         return user_content.strip()
 
+    @staticmethod
+    def _format_episode_diagnosis(
+        env_idx: int,
+        reward: Any,
+        info: dict[str, Any] | None,
+    ) -> str:
+        """One per-episode reward/error summary block for the game log.
+
+        `reward` is the terminal per-agent reward dict from env.step; the
+        per-agent turn/error counts come from
+        info["episode_metrics"]["action_validity"]["by_agent"].
+        """
+        by_agent = {}
+        consensus_line = ""
+        if isinstance(info, dict):
+            em = info.get("episode_metrics") or {}
+            by_agent = (em.get("action_validity") or {}).get("by_agent") or {}
+            est = info.get("episode_state") or {}
+            if est.get("consensus_reached"):
+                consensus_line = f"consensus: YES -> student {est.get('consensus_choice')}"
+            else:
+                consensus_line = "consensus: NO"
+
+        agent_ids = sorted(by_agent) or (
+            sorted(reward) if isinstance(reward, dict) else []
+        )
+        lines = [f"\n=== EPISODE DIAGNOSIS (env={env_idx}) ==="]
+        total_turns = 0
+        for ag in agent_ids:
+            r = float(reward.get(ag, 0.0)) if isinstance(reward, dict) else 0.0
+            stats = by_agent.get(ag, {})
+            turns = int(stats.get("turns", 0))
+            fmt = int(stats.get("format_errors", 0))
+            inv = int(stats.get("invalid_errors", 0))
+            total_turns += turns
+            fmt_pct = f" ({fmt / turns:.0%})" if turns and fmt else ""
+            inv_pct = f" ({inv / turns:.0%})" if turns and inv else ""
+            lines.append(
+                f"  {ag}: reward={r:+.3f} | turns={turns} | "
+                f"format_err={fmt}/{turns}{fmt_pct} | invalid_err={inv}/{turns}{inv_pct}"
+            )
+        if consensus_line:
+            lines.append(f"  {consensus_line}   (total turns: {total_turns})")
+        lines.append(
+            "  note: reward is the received utility plus this episode's FINAL turn's "
+            "penalty only; earlier turns' format/invalid penalties are not included here "
+            "(see the per-turn error counts above)."
+        )
+        return "\n".join(lines) + "\n"
+
     def _format_game_log_prompt_header(
         self,
         system_prompts: dict[str, str] | None,
@@ -457,7 +507,6 @@ class ToolAgentLoop(AgentLoopBase):
         outputs = []
         num_turns = 0
         reward = 0.0
-        is_full = False
         bootstrap_added = False
         # Index into `outputs` of each agent's most recent turn in the CURRENT
         # episode. Used at episode end to route every professor's own terminal
@@ -480,6 +529,20 @@ class ToolAgentLoop(AgentLoopBase):
         if not isinstance(sampling_params.get("logprobs"), int) or sampling_params["logprobs"] < 20:
             sampling_params["logprobs"] = 20
         while True:
+            # Reserve a real-turn slot BEFORE generation/env.step. If we only
+            # increment after generation, multiple async workers can pass the
+            # pre-generation fullness check at once and append extra real rows
+            # beyond gen_batch_size, causing trainer batch-size mismatches.
+            reserved_turn_fills_counter = False
+            if not is_val:
+                with _phase(profile, "counter_increment"):
+                    turn_accepted, reserved_turn_fills_counter = await counter.increment.remote()
+                if not turn_accepted:
+                    # Another worker filled the shared rollout counter while
+                    # this worker was idle. Do not generate or step the env
+                    # beyond the requested real-turn budget.
+                    break
+
             with simple_timer("generate_sequences", metrics), _phase(profile, "vllm_generate"):
                 output = await self.server_manager.generate(
                     request_id=request_id,
@@ -538,10 +601,6 @@ class ToolAgentLoop(AgentLoopBase):
                 }}
 
             last_prompt_ids = copy.deepcopy(prompt_ids)
-            with _phase(profile, "counter_is_full"):
-                is_full = await counter.is_full.remote()
-            if is_full and not is_val:
-                break
 
             # Store observation before step (always, for loop detection)
             observation = copy.deepcopy(messages)
@@ -601,8 +660,6 @@ class ToolAgentLoop(AgentLoopBase):
             # if num_turns == mini_batch_size + 1:
             #     break
 
-            with _phase(profile, "counter_increment"):
-                is_full = await counter.increment.remote()
             # Record this turn's row. We handle `done` BEFORE the truncation
             # exit so the real closing-action row is always kept (even when the
             # closing turn is also the one that fills the counter): it carries
@@ -629,12 +686,20 @@ class ToolAgentLoop(AgentLoopBase):
                             outputs[row_idx].rewards += float(other_reward)
                             outputs[row_idx].done = True
                 episode_last_row = {}
-            elif not (is_full and not is_val):
-                # Normal (non-terminal, non-truncation) turn.
+
+                # Per-episode reward/error diagnosis in the game log.
+                if log_this_game:
+                    game_entries.append(
+                        self._format_episode_diagnosis(env_idx, reward, _flat_info)
+                    )
+            else:
+                # Normal non-terminal turn. If this accepted turn filled the
+                # counter, keep it as the final real row and append bootstrap
+                # rows below.
                 outputs.append(turn_data)
                 episode_last_row[str(acting_agent_id)] = len(outputs) - 1
 
-            if is_full and not is_val:
+            if reserved_turn_fills_counter and not is_val:
                 # Buffer full: append one value-carrier bootstrap row per agent
                 # so every (env, agent) chain ends with a strippable terminal
                 # row (removed before training; reward ignored by GAE, kept 0.0).
