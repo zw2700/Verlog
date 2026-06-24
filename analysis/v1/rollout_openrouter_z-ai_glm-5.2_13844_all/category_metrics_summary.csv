@@ -1,0 +1,3 @@
+category,episodes,percent,consensus_rate,socially_optimal_rate,socially_optimal_given_consensus_rate,avg_social_welfare_efficiency,avg_chosen_student_rank_global_consensus_only,avg_tokens_used,avg_total_turns
+negotiation,72,0.72,0.7222222222222222,0.5833333333333334,0.8076923076923077,0.7113345713318658,1.3076923076923077,80.81944444444444,4.055555555555555
+instant_decision,28,0.28,0.9642857142857143,0.75,0.7777777777777778,0.9554992582081586,1.2222222222222223,37.82142857142857,2.107142857142857

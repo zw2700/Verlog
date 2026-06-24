@@ -13,7 +13,6 @@
 # limitations under the License.
 import asyncio
 import copy
-import json
 import logging
 import os
 import re
@@ -23,7 +22,6 @@ from pathlib import Path
 from enum import Enum
 from typing import Any, Optional, List
 from uuid import uuid4
-import numpy as np
 from datetime import datetime
 
 # Lightweight per-turn profiler. Enabled by VERL_PROFILE_AGENT_LOOP=1.
@@ -59,6 +57,7 @@ def _format_profile(profile: dict, *, env_idx: int, turns: int, agent_id: Option
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.experimental.agent_loop.tool_parser import FunctionCall, ToolParser
+from verl.envs import hiring_episode_logging as episode_logging
 from verl.interactions.base import BaseInteraction
 from verl.interactions.utils.interaction_registry import initialize_interactions_from_config
 from verl.tools.schemas import ToolResponse
@@ -140,9 +139,12 @@ class ToolAgentLoop(AgentLoopBase):
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
         cls.io_log_path = os.getenv("VERL_AGENT_IO_LOG_PATH", "logs/agent_model_io5.log")
+        cls.io_log_full_prompt = os.getenv("VERL_AGENT_IO_LOG_FULL_PROMPT", "1") == "1"
+        cls.episode_log_path = os.getenv("VERL_AGENT_EPISODE_LOG_PATH", None)
         cls.game_log_path = os.getenv("VERL_GAME_LOG_PATH", None)
         cls.game_log_interval = int(os.getenv("VERL_GAME_LOG_INTERVAL", "1"))
         cls._game_log_prompt_written = False
+        cls._io_log_prompt_written = False
         cls.system_prompt = tokenizer.apply_chat_template(
             [{}], add_generation_prompt=False, tokenize=True, **cls.apply_chat_template_kwargs
         )
@@ -164,19 +166,34 @@ class ToolAgentLoop(AgentLoopBase):
         prompt_text = self.tokenizer.decode(prompt_ids, skip_special_tokens=False)
         response_text = self.tokenizer.decode(response_ids, skip_special_tokens=False)
         timestamp = datetime.utcnow().isoformat(timespec="seconds")
+        turn_context = self._extract_turn_context(messages)
+        prompt_section = (
+            f"[PROMPT]\n{prompt_text}"
+            if self.io_log_full_prompt
+            else f"[TURN CONTEXT]\n{turn_context}"
+        )
         log_block = (
             f"\n=== {timestamp}Z env={env_idx} turn={turn_id} agent={agent_id} "
             f"prompt_tokens={len(prompt_ids)} response_tokens={len(response_ids)} ===\n"
-            f"[PROMPT]\n{prompt_text}\n\n"
+            f"{prompt_section}\n\n"
             f"[OUTPUT]\n{response_text}\n"
         )
 
         log_file = Path(self.io_log_path)
         log_file.parent.mkdir(parents=True, exist_ok=True)
         with log_file.open("a", encoding="utf-8") as f:
+            if not self.io_log_full_prompt and not self.__class__._io_log_prompt_written:
+                f.write(
+                    "\n"
+                    + "=" * 70
+                    + f"\n=== AGENT I/O LOG compact_prompt=1 {timestamp}Z ===\n"
+                    + "=" * 70
+                    + "\nFull system prompts are omitted from per-turn entries. "
+                    + "Set VERL_AGENT_IO_LOG_FULL_PROMPT=1 to log decoded full prompts.\n"
+                )
+                self.__class__._io_log_prompt_written = True
             f.write(log_block)
 
-        turn_context = self._extract_turn_context(messages)
         return (
             f"\n=== {timestamp}Z env={env_idx} turn={turn_id} agent={agent_id} "
             f"prompt_tokens={len(prompt_ids)} response_tokens={len(response_ids)} ===\n"
@@ -247,22 +264,85 @@ class ToolAgentLoop(AgentLoopBase):
         meta["vote_alternatives"] = alts
         return meta
 
+    @staticmethod
+    def _json_safe(obj: Any) -> Any:
+        """Convert numpy/scalar objects into JSON-serializable values."""
+        return episode_logging.json_safe(obj)
+
+    @staticmethod
+    def _append_jsonl_locked(path: str | Path, row: dict[str, Any]) -> None:
+        """Append one JSONL row under a file lock to avoid multi-worker interleaving."""
+        episode_logging.append_jsonl_locked(path, row)
+
+    @classmethod
+    def _extract_action_text(cls, output: str) -> str:
+        return episode_logging.extract_action_text(output)
+
+    @classmethod
+    def _parse_action_summary(cls, action_text: str) -> dict[str, Any]:
+        return episode_logging.parse_action_summary(action_text)
+
+    @classmethod
+    def _extract_utilities_from_context(cls, turn_context: str) -> dict[str, float]:
+        return episode_logging.extract_utilities_from_context(turn_context)
+
+    def _build_episode_turn_entry(
+        self,
+        *,
+        timestamp: str,
+        env_idx: int,
+        global_steps: int,
+        epoch: int,
+        turn_id: int,
+        episode_turn_id: int,
+        agent_id: str | None,
+        prompt_ids: list[int],
+        response_ids: list[int],
+        messages: list[dict[str, Any]],
+        output_text: str,
+    ) -> dict[str, Any]:
+        return episode_logging.build_episode_turn_entry(
+            timestamp=timestamp,
+            env_idx=env_idx,
+            global_steps=global_steps,
+            epoch=epoch,
+            turn_id=turn_id,
+            episode_turn_id=episode_turn_id,
+            agent_id=agent_id,
+            prompt_tokens=len(prompt_ids),
+            response_tokens=len(response_ids),
+            messages=messages,
+            output_text=output_text,
+        )
+
+    def _append_episode_jsonl_log(
+        self,
+        *,
+        epoch: int,
+        global_steps: int,
+        env_idx: int,
+        episode_index: int,
+        turns: list[dict[str, Any]],
+        reward: Any,
+        info: dict[str, Any] | None,
+    ) -> None:
+        if not self.episode_log_path:
+            return
+
+        episode_logging.append_episode_jsonl_log(
+            self.episode_log_path,
+            epoch=epoch,
+            global_steps=global_steps,
+            env_idx=env_idx,
+            episode_index=episode_index,
+            turns=turns,
+            reward=reward,
+            info=info,
+        )
+
     def _extract_turn_context(self, messages: list[dict[str, Any]]) -> str:
         """Return only the current observation shown to the acting professor."""
-        user_content = ""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                user_content = str(msg.get("content", ""))
-                break
-
-        if not user_content:
-            return "(no user turn context found)"
-
-        marker = "=== YOUR TURN"
-        marker_idx = user_content.find(marker)
-        if marker_idx >= 0:
-            return user_content[marker_idx:].strip()
-        return user_content.strip()
+        return episode_logging.extract_turn_context(messages)
 
     @staticmethod
     def _format_episode_diagnosis(
@@ -276,43 +356,7 @@ class ToolAgentLoop(AgentLoopBase):
         per-agent turn/error counts come from
         info["episode_metrics"]["action_validity"]["by_agent"].
         """
-        by_agent = {}
-        consensus_line = ""
-        if isinstance(info, dict):
-            em = info.get("episode_metrics") or {}
-            by_agent = (em.get("action_validity") or {}).get("by_agent") or {}
-            est = info.get("episode_state") or {}
-            if est.get("consensus_reached"):
-                consensus_line = f"consensus: YES -> student {est.get('consensus_choice')}"
-            else:
-                consensus_line = "consensus: NO"
-
-        agent_ids = sorted(by_agent) or (
-            sorted(reward) if isinstance(reward, dict) else []
-        )
-        lines = [f"\n=== EPISODE DIAGNOSIS (env={env_idx}) ==="]
-        total_turns = 0
-        for ag in agent_ids:
-            r = float(reward.get(ag, 0.0)) if isinstance(reward, dict) else 0.0
-            stats = by_agent.get(ag, {})
-            turns = int(stats.get("turns", 0))
-            fmt = int(stats.get("format_errors", 0))
-            inv = int(stats.get("invalid_errors", 0))
-            total_turns += turns
-            fmt_pct = f" ({fmt / turns:.0%})" if turns and fmt else ""
-            inv_pct = f" ({inv / turns:.0%})" if turns and inv else ""
-            lines.append(
-                f"  {ag}: reward={r:+.3f} | turns={turns} | "
-                f"format_err={fmt}/{turns}{fmt_pct} | invalid_err={inv}/{turns}{inv_pct}"
-            )
-        if consensus_line:
-            lines.append(f"  {consensus_line}   (total turns: {total_turns})")
-        lines.append(
-            "  note: reward is the received utility plus this episode's FINAL turn's "
-            "penalty only; earlier turns' format/invalid penalties are not included here "
-            "(see the per-turn error counts above)."
-        )
-        return "\n".join(lines) + "\n"
+        return episode_logging.format_episode_diagnosis(env_idx, reward, info)
 
     def _format_game_log_prompt_header(
         self,
@@ -506,6 +550,8 @@ class ToolAgentLoop(AgentLoopBase):
         
         outputs = []
         num_turns = 0
+        episode_index = 0
+        episode_turns: list[dict[str, Any]] = []
         reward = 0.0
         bootstrap_added = False
         # Index into `outputs` of each agent's most recent turn in the CURRENT
@@ -573,6 +619,23 @@ class ToolAgentLoop(AgentLoopBase):
                     None,
                     lambda: self.tokenizer.decode(response_ids, skip_special_tokens=True)
                 )
+            output_text_for_log = actions
+            timestamp_for_log = datetime.utcnow().isoformat(timespec="seconds")
+            episode_turns.append(
+                self._build_episode_turn_entry(
+                    timestamp=timestamp_for_log,
+                    env_idx=env_idx,
+                    global_steps=global_steps,
+                    epoch=epoch,
+                    turn_id=num_turns,
+                    episode_turn_id=len(episode_turns),
+                    agent_id=agent_id,
+                    prompt_ids=prompt_ids,
+                    response_ids=response_ids,
+                    messages=messages,
+                    output_text=output_text_for_log,
+                )
+            )
             with _phase(profile, "append_io_log"):
                 log_entry = await self.loop.run_in_executor(
                     None,
@@ -692,6 +755,17 @@ class ToolAgentLoop(AgentLoopBase):
                     game_entries.append(
                         self._format_episode_diagnosis(env_idx, reward, _flat_info)
                     )
+                self._append_episode_jsonl_log(
+                    epoch=epoch,
+                    global_steps=global_steps,
+                    env_idx=env_idx,
+                    episode_index=episode_index,
+                    turns=episode_turns,
+                    reward=reward,
+                    info=_flat_info,
+                )
+                episode_turns = []
+                episode_index += 1
             else:
                 # Normal non-terminal turn. If this accepted turn filled the
                 # counter, keep it as the final real row and append bootstrap

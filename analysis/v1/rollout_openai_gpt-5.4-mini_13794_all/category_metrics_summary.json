@@ -1,0 +1,26 @@
+[
+  {
+    "avg_chosen_student_rank_global_consensus_only": 1.5227272727272727,
+    "avg_social_welfare_efficiency": 0.7620414615542005,
+    "avg_tokens_used": 72.75,
+    "avg_total_turns": 3.0357142857142856,
+    "category": "negotiation",
+    "consensus_rate": 0.7857142857142857,
+    "episodes": 56,
+    "percent": 0.56,
+    "socially_optimal_given_consensus_rate": 0.6818181818181818,
+    "socially_optimal_rate": 0.5357142857142857
+  },
+  {
+    "avg_chosen_student_rank_global_consensus_only": 1.3409090909090908,
+    "avg_social_welfare_efficiency": 0.9773363193874054,
+    "avg_tokens_used": 24.75,
+    "avg_total_turns": 2.1136363636363638,
+    "category": "instant_decision",
+    "consensus_rate": 1.0,
+    "episodes": 44,
+    "percent": 0.44,
+    "socially_optimal_given_consensus_rate": 0.75,
+    "socially_optimal_rate": 0.75
+  }
+]

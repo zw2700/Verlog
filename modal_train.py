@@ -88,6 +88,8 @@ def run_training():
     os.environ.update({
         "CUDA_VISIBLE_DEVICES":   "0,1,2,3",
         "VERL_AGENT_IO_LOG_PATH": "/logs/train_4_16384_shortest/agent_model.log",
+        "VERL_AGENT_IO_LOG_FULL_PROMPT": "0",
+        "VERL_AGENT_EPISODE_LOG_PATH": "/logs/train_4_16384_shortest/episode_log.jsonl",
         "VERL_GAME_LOG_PATH":     "/logs/train_4_16384_shortest/game_log.log",
     })
 

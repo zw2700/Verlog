@@ -11,18 +11,6 @@
 #SBATCH --time=47:59:00
 #SBATCH --gres=gpu:a6000:4
 
-# For debugging/testing, use these settings instead:
-# #SBATCH --partition=debug
-# #SBATCH --qos=qos_debug
-# #SBATCH --time=02:00:00
-# #SBATCH --gres=gpu:a6000:2
-
-# For long runs with preemption tolerance, use these settings:
-# #SBATCH --partition=preempt
-# #SBATCH --qos=qos_preempt
-# #SBATCH --time=7-00:00:00
-# #SBATCH --gres=gpu:a6000:4
-
 set -euo pipefail
 
 # ============================================================================
@@ -32,7 +20,7 @@ set -euo pipefail
 # ============================================================================
 
 EXP_NOTES=(
-    "Add new metrics under env/step, counts and fraction of socially optimum choices."
+    "Added new episode logs for better analysis."
 )
 
 echo "=== Experiment Notes ==="
@@ -125,6 +113,8 @@ LOG_PATH="$PROJECT_DIR/logs/agent_model_train_auton_${SLURM_JOB_ID}.log"
 mkdir -p "$(dirname "$LOG_PATH")"
 : > "$LOG_PATH"
 export VERL_AGENT_IO_LOG_PATH="$LOG_PATH"
+export VERL_AGENT_IO_LOG_FULL_PROMPT=0
+export VERL_AGENT_EPISODE_LOG_PATH="$PROJECT_DIR/logs/episode_log_train_auton_${SLURM_JOB_ID}.jsonl"
 export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_train_auton_${SLURM_JOB_ID}.log"
 
 # ============================================================================
