@@ -330,6 +330,20 @@ def make_client(args: argparse.Namespace) -> BaseClient:
             token_limit_field="max_completion_tokens",
         )
 
+    if args.provider == "cmu-gateway":
+        return OpenAICompatibleClient(
+            model=args.model,
+            api_key=_env_key(args.api_key_env or "CMU_GATEWAY_API_KEY", None),
+            base_url=args.base_url or "https://ai-gateway.andrew.cmu.edu/v1",
+            temperature=args.temperature,
+            max_tokens=args.max_output_tokens,
+            timeout=args.timeout,
+            max_retries=args.max_retries,
+            top_p=args.top_p,
+            request_logprobs=args.request_logprobs,
+            token_limit_field="max_tokens",
+        )
+
     if args.provider == "openai-compatible":
         if not args.base_url:
             raise ProviderError("--base-url is required for --provider openai-compatible")
@@ -555,7 +569,11 @@ def run_episode(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--provider", required=True, choices=["openai", "anthropic", "openrouter", "openai-compatible", "fake"])
+    parser.add_argument(
+        "--provider",
+        required=True,
+        choices=["openai", "anthropic", "openrouter", "cmu-gateway", "openai-compatible", "fake"],
+    )
     parser.add_argument("--model", default="gpt-4o-mini")
     parser.add_argument("--base-url", default=None)
     parser.add_argument("--api-key-env", default=None)
