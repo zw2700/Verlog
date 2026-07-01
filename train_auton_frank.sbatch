@@ -20,7 +20,7 @@ set -euo pipefail
 # ============================================================================
 
 EXP_NOTES=(
-    "Env changes: no termination on all voted no consensus + high correlation rejection"
+    "Model: Qwen3-4B; Env changes: no termination on all voted no consensus"
 )
 
 echo "=== Experiment Notes ==="
