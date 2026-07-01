@@ -146,6 +146,8 @@ def build_episode_log_row(
     social_welfare = episode_metrics.get("social_welfare") or {}
     outcome_quality = episode_metrics.get("outcome_quality") or {}
     negotiation = episode_metrics.get("negotiation_dynamics") or {}
+    llm_input_tokens = sum(int(turn.get("prompt_tokens") or 0) for turn in turns)
+    llm_output_tokens = sum(int(turn.get("response_tokens") or 0) for turn in turns)
 
     rank = outcome_quality.get("chosen_student_rank_global")
     consensus = bool(episode_state.get("consensus_reached", False))
@@ -165,6 +167,9 @@ def build_episode_log_row(
             "total_turns",
             sum(int(stats.get("turns", 0)) for stats in (action_validity.get("by_agent") or {}).values()),
         ),
+        "llm_input_tokens": llm_input_tokens,
+        "llm_output_tokens": llm_output_tokens,
+        "llm_total_tokens": llm_input_tokens + llm_output_tokens,
         "tokens_used": token_accounting.get("tokens_used", episode_state.get("tokens_used")),
         "token_budget": token_accounting.get("total_budget", episode_state.get("token_budget")),
         "socially_optimal": bool(rank == 1) if rank is not None else False,

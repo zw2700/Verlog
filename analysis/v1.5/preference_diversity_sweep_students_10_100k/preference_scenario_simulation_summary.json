@@ -1,0 +1,358 @@
+{
+  "experiments": [
+    {
+      "env_config": {
+        "feature_dim": 5,
+        "max_steps": 50,
+        "preference_correlation_threshold": 0.0,
+        "preference_rejection_max_attempts": 1000,
+        "professor_ids": [
+          "prof_1",
+          "prof_2",
+          "prof_3"
+        ],
+        "professor_preference_mode": "random_permutation",
+        "student_profile_mode": "discrete_simplex",
+        "student_specialization_min_top": 0.7,
+        "students_per_batch": 10,
+        "token_budget": 500,
+        "vote_threshold": 0.5
+      },
+      "experiment": "baseline_random_permutation",
+      "samples": 100000,
+      "scenarios": [
+        {
+          "count": 3711,
+          "probability": 0.03711,
+          "scenario": "all_three_share_top"
+        },
+        {
+          "count": 14116,
+          "probability": 0.14116,
+          "scenario": "only_prof_1_prof_2_share_top"
+        },
+        {
+          "count": 14229,
+          "probability": 0.14229,
+          "scenario": "only_prof_1_prof_3_share_top"
+        },
+        {
+          "count": 14235,
+          "probability": 0.14235,
+          "scenario": "only_prof_2_prof_3_share_top"
+        },
+        {
+          "count": 53117,
+          "probability": 0.53117,
+          "scenario": "no_pair_shares_top"
+        },
+        {
+          "count": 592,
+          "probability": 0.00592,
+          "scenario": "multi_pair_without_all_three_common_top"
+        },
+        {
+          "count": 0,
+          "probability": 0.0,
+          "scenario": "malformed_or_missing_preferences"
+        }
+      ],
+      "seed": 0
+    },
+    {
+      "env_config": {
+        "feature_dim": 5,
+        "max_steps": 50,
+        "preference_correlation_threshold": 0.0,
+        "preference_rejection_max_attempts": 1000,
+        "professor_ids": [
+          "prof_1",
+          "prof_2",
+          "prof_3"
+        ],
+        "professor_preference_mode": "diverse_top_feature",
+        "student_profile_mode": "discrete_simplex",
+        "student_specialization_min_top": 0.7,
+        "students_per_batch": 10,
+        "token_budget": 500,
+        "vote_threshold": 0.5
+      },
+      "experiment": "direct_distinct_top_feature",
+      "samples": 100000,
+      "scenarios": [
+        {
+          "count": 628,
+          "probability": 0.00628,
+          "scenario": "all_three_share_top"
+        },
+        {
+          "count": 8733,
+          "probability": 0.08733,
+          "scenario": "only_prof_1_prof_2_share_top"
+        },
+        {
+          "count": 8851,
+          "probability": 0.08851,
+          "scenario": "only_prof_1_prof_3_share_top"
+        },
+        {
+          "count": 8727,
+          "probability": 0.08727,
+          "scenario": "only_prof_2_prof_3_share_top"
+        },
+        {
+          "count": 72791,
+          "probability": 0.72791,
+          "scenario": "no_pair_shares_top"
+        },
+        {
+          "count": 270,
+          "probability": 0.0027,
+          "scenario": "multi_pair_without_all_three_common_top"
+        },
+        {
+          "count": 0,
+          "probability": 0.0,
+          "scenario": "malformed_or_missing_preferences"
+        }
+      ],
+      "seed": 0
+    },
+    {
+      "env_config": {
+        "feature_dim": 5,
+        "max_steps": 50,
+        "preference_correlation_threshold": 0.3,
+        "preference_rejection_max_attempts": 1000,
+        "professor_ids": [
+          "prof_1",
+          "prof_2",
+          "prof_3"
+        ],
+        "professor_preference_mode": "rejection_low_correlation",
+        "student_profile_mode": "discrete_simplex",
+        "student_specialization_min_top": 0.7,
+        "students_per_batch": 10,
+        "token_budget": 500,
+        "vote_threshold": 0.5
+      },
+      "experiment": "rejection_corr_le_0_3",
+      "samples": 100000,
+      "scenarios": [
+        {
+          "count": 410,
+          "probability": 0.0041,
+          "scenario": "all_three_share_top"
+        },
+        {
+          "count": 8692,
+          "probability": 0.08692,
+          "scenario": "only_prof_1_prof_2_share_top"
+        },
+        {
+          "count": 8537,
+          "probability": 0.08537,
+          "scenario": "only_prof_1_prof_3_share_top"
+        },
+        {
+          "count": 8563,
+          "probability": 0.08563,
+          "scenario": "only_prof_2_prof_3_share_top"
+        },
+        {
+          "count": 73559,
+          "probability": 0.73559,
+          "scenario": "no_pair_shares_top"
+        },
+        {
+          "count": 239,
+          "probability": 0.00239,
+          "scenario": "multi_pair_without_all_three_common_top"
+        },
+        {
+          "count": 0,
+          "probability": 0.0,
+          "scenario": "malformed_or_missing_preferences"
+        }
+      ],
+      "seed": 0
+    },
+    {
+      "env_config": {
+        "feature_dim": 5,
+        "max_steps": 50,
+        "preference_correlation_threshold": 0.0,
+        "preference_rejection_max_attempts": 1000,
+        "professor_ids": [
+          "prof_1",
+          "prof_2",
+          "prof_3"
+        ],
+        "professor_preference_mode": "rejection_low_correlation",
+        "student_profile_mode": "discrete_simplex",
+        "student_specialization_min_top": 0.7,
+        "students_per_batch": 10,
+        "token_budget": 500,
+        "vote_threshold": 0.5
+      },
+      "experiment": "rejection_corr_le_0_0",
+      "samples": 100000,
+      "scenarios": [
+        {
+          "count": 48,
+          "probability": 0.00048,
+          "scenario": "all_three_share_top"
+        },
+        {
+          "count": 4943,
+          "probability": 0.04943,
+          "scenario": "only_prof_1_prof_2_share_top"
+        },
+        {
+          "count": 5035,
+          "probability": 0.05035,
+          "scenario": "only_prof_1_prof_3_share_top"
+        },
+        {
+          "count": 5050,
+          "probability": 0.0505,
+          "scenario": "only_prof_2_prof_3_share_top"
+        },
+        {
+          "count": 84828,
+          "probability": 0.84828,
+          "scenario": "no_pair_shares_top"
+        },
+        {
+          "count": 96,
+          "probability": 0.00096,
+          "scenario": "multi_pair_without_all_three_common_top"
+        },
+        {
+          "count": 0,
+          "probability": 0.0,
+          "scenario": "malformed_or_missing_preferences"
+        }
+      ],
+      "seed": 0
+    },
+    {
+      "env_config": {
+        "feature_dim": 5,
+        "max_steps": 50,
+        "preference_correlation_threshold": -0.1,
+        "preference_rejection_max_attempts": 1000,
+        "professor_ids": [
+          "prof_1",
+          "prof_2",
+          "prof_3"
+        ],
+        "professor_preference_mode": "rejection_low_correlation",
+        "student_profile_mode": "discrete_simplex",
+        "student_specialization_min_top": 0.7,
+        "students_per_batch": 10,
+        "token_budget": 500,
+        "vote_threshold": 0.5
+      },
+      "experiment": "rejection_corr_le_neg_0_1",
+      "samples": 100000,
+      "scenarios": [
+        {
+          "count": 16,
+          "probability": 0.00016,
+          "scenario": "all_three_share_top"
+        },
+        {
+          "count": 3279,
+          "probability": 0.03279,
+          "scenario": "only_prof_1_prof_2_share_top"
+        },
+        {
+          "count": 3243,
+          "probability": 0.03243,
+          "scenario": "only_prof_1_prof_3_share_top"
+        },
+        {
+          "count": 3221,
+          "probability": 0.03221,
+          "scenario": "only_prof_2_prof_3_share_top"
+        },
+        {
+          "count": 90199,
+          "probability": 0.90199,
+          "scenario": "no_pair_shares_top"
+        },
+        {
+          "count": 42,
+          "probability": 0.00042,
+          "scenario": "multi_pair_without_all_three_common_top"
+        },
+        {
+          "count": 0,
+          "probability": 0.0,
+          "scenario": "malformed_or_missing_preferences"
+        }
+      ],
+      "seed": 0
+    },
+    {
+      "env_config": {
+        "feature_dim": 5,
+        "max_steps": 50,
+        "preference_correlation_threshold": 0.0,
+        "preference_rejection_max_attempts": 1000,
+        "professor_ids": [
+          "prof_1",
+          "prof_2",
+          "prof_3"
+        ],
+        "professor_preference_mode": "rejection_low_correlation_distinct_top",
+        "student_profile_mode": "discrete_simplex",
+        "student_specialization_min_top": 0.7,
+        "students_per_batch": 10,
+        "token_budget": 500,
+        "vote_threshold": 0.5
+      },
+      "experiment": "rejection_corr_le_0_0_distinct_top",
+      "samples": 100000,
+      "scenarios": [
+        {
+          "count": 51,
+          "probability": 0.00051,
+          "scenario": "all_three_share_top"
+        },
+        {
+          "count": 4408,
+          "probability": 0.04408,
+          "scenario": "only_prof_1_prof_2_share_top"
+        },
+        {
+          "count": 4480,
+          "probability": 0.0448,
+          "scenario": "only_prof_1_prof_3_share_top"
+        },
+        {
+          "count": 4524,
+          "probability": 0.04524,
+          "scenario": "only_prof_2_prof_3_share_top"
+        },
+        {
+          "count": 86453,
+          "probability": 0.86453,
+          "scenario": "no_pair_shares_top"
+        },
+        {
+          "count": 84,
+          "probability": 0.00084,
+          "scenario": "multi_pair_without_all_three_common_top"
+        },
+        {
+          "count": 0,
+          "probability": 0.0,
+          "scenario": "malformed_or_missing_preferences"
+        }
+      ],
+      "seed": 0
+    }
+  ]
+}

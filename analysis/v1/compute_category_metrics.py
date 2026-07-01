@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 
-VALID_STUDENTS = set(range(5))
-STUDENT_RE = re.compile(r"\b[Ss]tudents?\s*([0-4])\b")
+DEFAULT_VALID_STUDENTS = set(range(5))
+STUDENT_RE = re.compile(r"\b[Ss]tudents?\s*(\d+)\b")
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -54,14 +54,29 @@ def group_messages(turn: dict[str, Any]) -> list[str]:
     return [str(message) for message in raw] if isinstance(raw, list) else []
 
 
-def votes(turn: dict[str, Any]) -> list[int]:
+def valid_students_for_episode(ep: dict[str, Any]) -> set[int]:
+    student_batch = ep.get("student_batch")
+    if not isinstance(student_batch, list) or not student_batch:
+        return DEFAULT_VALID_STUDENTS
+
+    valid = set()
+    for fallback_idx, student in enumerate(student_batch):
+        if isinstance(student, dict):
+            idx = as_int(student.get("index"))
+            valid.add(idx if idx is not None else fallback_idx)
+        else:
+            valid.add(fallback_idx)
+    return valid
+
+
+def votes(turn: dict[str, Any], valid_students: set[int]) -> list[int]:
     raw = actions(turn).get("votes", [])
     if not isinstance(raw, list):
         return []
     parsed = []
     for value in raw:
         vote = as_int(value)
-        if vote is not None and vote in VALID_STUDENTS:
+        if vote is not None and vote in valid_students:
             parsed.append(vote)
     return parsed
 
@@ -80,28 +95,33 @@ def wait_for(turn: dict[str, Any]) -> list[str]:
     return [str(agent) for agent in raw] if isinstance(raw, list) else []
 
 
-def candidates_in_text(text: str) -> set[int]:
-    return {int(match) for match in STUDENT_RE.findall(text)}
+def candidates_in_text(text: str, valid_students: set[int]) -> set[int]:
+    return {
+        int(match)
+        for match in STUDENT_RE.findall(text)
+        if int(match) in valid_students
+    }
 
 
-def candidates_in_turn(turn: dict[str, Any]) -> set[int]:
-    candidates = set(votes(turn))
+def candidates_in_turn(turn: dict[str, Any], valid_students: set[int]) -> set[int]:
+    candidates = set(votes(turn, valid_students))
     for message in group_messages(turn):
-        candidates.update(candidates_in_text(message))
+        candidates.update(candidates_in_text(message, valid_students))
     return candidates
 
 
-def normalized_action(turn: dict[str, Any]) -> tuple[Any, ...]:
+def normalized_action(turn: dict[str, Any], valid_students: set[int]) -> tuple[Any, ...]:
     return (
         turn.get("agent"),
         tuple(message.strip().lower() for message in group_messages(turn)),
-        tuple(votes(turn)),
+        tuple(votes(turn, valid_students)),
         tuple(wait_for(turn)),
         wait_count(turn),
     )
 
 
 def is_malformed(ep: dict[str, Any]) -> str | None:
+    valid_students = valid_students_for_episode(ep)
     tokens_used = ep.get("tokens_used")
     if isinstance(tokens_used, bool) or not isinstance(tokens_used, (int, float)):
         return "missing_or_invalid_tokens_used"
@@ -111,7 +131,7 @@ def is_malformed(ep: dict[str, Any]) -> str | None:
         return "missing_or_invalid_turns"
 
     chosen = as_int(ep.get("chosen_student"))
-    if ep.get("consensus") is True and chosen not in VALID_STUDENTS:
+    if ep.get("consensus") is True and chosen not in valid_students:
         return "consensus_without_valid_chosen_student"
 
     for turn in turns:
@@ -122,7 +142,7 @@ def is_malformed(ep: dict[str, Any]) -> str | None:
             return "missing_or_invalid_actions"
         for raw_vote in raw_votes(turn):
             vote = as_int(raw_vote)
-            if vote not in VALID_STUDENTS:
+            if vote not in valid_students:
                 return "invalid_vote"
 
     return None
@@ -130,6 +150,7 @@ def is_malformed(ep: dict[str, Any]) -> str | None:
 
 def episode_features(ep: dict[str, Any]) -> dict[str, Any]:
     turns = ep.get("turns", [])
+    valid_students = valid_students_for_episode(ep)
     total_turns = len(turns)
     wait_like_turns = 0
     action_turns = 0
@@ -141,7 +162,7 @@ def episode_features(ep: dict[str, Any]) -> dict[str, Any]:
 
     for turn in turns:
         turn_groups = group_messages(turn)
-        turn_votes = votes(turn)
+        turn_votes = votes(turn, valid_students)
         turn_wait_for = wait_for(turn)
         turn_wait_count = wait_count(turn)
 
@@ -153,20 +174,20 @@ def episode_features(ep: dict[str, Any]) -> dict[str, Any]:
         if turn_groups:
             public_speakers.add(turn.get("agent"))
 
-        candidates.update(candidates_in_turn(turn))
+        candidates.update(candidates_in_turn(turn, valid_students))
         vote_count += len(turn_votes)
         group_message_count += len(turn_groups)
 
-    repeated_actions = Counter(normalized_action(turn) for turn in turns)
+    repeated_actions = Counter(normalized_action(turn, valid_students) for turn in turns)
     max_exact_repeated_action = repeated_actions.most_common(1)[0][1] if turns else 0
 
     last_turns = turns[-5:]
     last_action_speakers = {
         turn.get("agent")
         for turn in last_turns
-        if group_messages(turn) or votes(turn)
+        if group_messages(turn) or votes(turn, valid_students)
     }
-    last_vote_count = sum(len(votes(turn)) for turn in last_turns)
+    last_vote_count = sum(len(votes(turn, valid_students)) for turn in last_turns)
     recovered_into_consensus = bool(
         ep.get("consensus") is True
         and len(last_action_speakers) >= 2

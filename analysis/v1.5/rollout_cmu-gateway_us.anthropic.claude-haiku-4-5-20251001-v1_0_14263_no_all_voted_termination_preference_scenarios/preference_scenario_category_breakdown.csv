@@ -1,0 +1,9 @@
+scenario,category,episodes,percent_of_scenario,consensus_rate,socially_optimal_rate,socially_optimal_given_consensus_rate
+all_three_share_top,instant_decision,9,1.0,1.0,1.0,1.0
+only_prof_1_prof_2_share_top,instant_decision,16,0.8888888888888888,1.0,0.75,0.75
+only_prof_1_prof_2_share_top,negotiation,2,0.1111111111111111,1.0,0.5,0.5
+only_prof_1_prof_3_share_top,instant_decision,2,0.09523809523809523,1.0,1.0,1.0
+only_prof_1_prof_3_share_top,negotiation,19,0.9047619047619048,1.0,0.8947368421052632,0.8947368421052632
+only_prof_2_prof_3_share_top,instant_decision,1,0.058823529411764705,1.0,1.0,1.0
+only_prof_2_prof_3_share_top,negotiation,16,0.9411764705882353,1.0,1.0,1.0
+no_pair_shares_top,negotiation,35,1.0,0.9714285714285714,0.4,0.4117647058823529

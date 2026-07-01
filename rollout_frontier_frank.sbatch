@@ -17,6 +17,27 @@ ENV_PATH="/zfsauton/scratch/cpulling/conda_envs/verlog"
 
 cd "$PROJECT_DIR"
 
+SUBMIT_ENV_VARS=(
+    PROVIDER
+    MODEL
+    NUM_EPISODES
+    NUM_ENVS
+    SEED_BASE
+    TEMPERATURE
+    TOP_P
+    MAX_OUTPUT_TOKENS
+    REQUEST_LOGPROBS
+    ROLLOUT_POSTFIX
+    VERL_AGENT_EPISODE_LOG_PATH
+    VERL_GAME_LOG_PATH
+)
+for name in "${SUBMIT_ENV_VARS[@]}"; do
+    if [ "${!name+x}" = "x" ]; then
+        export "SUBMIT_OVERRIDE_${name}=1"
+        export "SUBMIT_VALUE_${name}=${!name}"
+    fi
+done
+
 ROLLOUT_FRONTIER_ENV_FILE="${ROLLOUT_FRONTIER_ENV_FILE:-$PROJECT_DIR/rollout_frontier.env}"
 if [ -f "$ROLLOUT_FRONTIER_ENV_FILE" ]; then
     echo "Loading rollout config from $ROLLOUT_FRONTIER_ENV_FILE"
@@ -25,6 +46,14 @@ if [ -f "$ROLLOUT_FRONTIER_ENV_FILE" ]; then
     source "$ROLLOUT_FRONTIER_ENV_FILE"
     set +a
 fi
+for name in "${SUBMIT_ENV_VARS[@]}"; do
+    override_var="SUBMIT_OVERRIDE_${name}"
+    value_var="SUBMIT_VALUE_${name}"
+    if [ "${!override_var:-}" = "1" ]; then
+        printf -v "$name" "%s" "${!value_var}"
+        export "$name"
+    fi
+done
 
 export PATH="$ENV_PATH/bin:$PATH"
 export CONDA_PREFIX="$ENV_PATH"

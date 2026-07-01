@@ -1,0 +1,7 @@
+scenario,count,probability
+all_three_share_top,7581,0.07581
+only_prof_1_prof_2_share_top,18442,0.18442
+only_prof_1_prof_3_share_top,18289,0.18289
+only_prof_2_prof_3_share_top,18201,0.18201
+no_pair_shares_top,36170,0.3617
+multi_pair_without_all_three_common_top,1317,0.01317

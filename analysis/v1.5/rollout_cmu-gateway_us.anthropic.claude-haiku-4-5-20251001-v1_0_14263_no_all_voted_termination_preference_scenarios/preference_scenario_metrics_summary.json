@@ -1,0 +1,62 @@
+[
+  {
+    "avg_social_welfare_efficiency": 1.0,
+    "avg_tokens_used": 23.77777777777778,
+    "avg_total_turns": 2.0,
+    "category_counts": "instant_decision=9",
+    "consensus_rate": 1.0,
+    "episodes": 9,
+    "percent": 0.09,
+    "scenario": "all_three_share_top",
+    "socially_optimal_given_consensus_rate": 1.0,
+    "socially_optimal_rate": 1.0
+  },
+  {
+    "avg_social_welfare_efficiency": 0.9869426800454141,
+    "avg_tokens_used": 52.333333333333336,
+    "avg_total_turns": 2.5,
+    "category_counts": "instant_decision=16, negotiation=2",
+    "consensus_rate": 1.0,
+    "episodes": 18,
+    "percent": 0.18,
+    "scenario": "only_prof_1_prof_2_share_top",
+    "socially_optimal_given_consensus_rate": 0.7222222222222222,
+    "socially_optimal_rate": 0.7222222222222222
+  },
+  {
+    "avg_social_welfare_efficiency": 0.9890977443609023,
+    "avg_tokens_used": 75.71428571428571,
+    "avg_total_turns": 3.0476190476190474,
+    "category_counts": "instant_decision=2, negotiation=19",
+    "consensus_rate": 1.0,
+    "episodes": 21,
+    "percent": 0.21,
+    "scenario": "only_prof_1_prof_3_share_top",
+    "socially_optimal_given_consensus_rate": 0.9047619047619048,
+    "socially_optimal_rate": 0.9047619047619048
+  },
+  {
+    "avg_social_welfare_efficiency": 1.0,
+    "avg_tokens_used": 73.0,
+    "avg_total_turns": 3.2941176470588234,
+    "category_counts": "instant_decision=1, negotiation=16",
+    "consensus_rate": 1.0,
+    "episodes": 17,
+    "percent": 0.17,
+    "scenario": "only_prof_2_prof_3_share_top",
+    "socially_optimal_given_consensus_rate": 1.0,
+    "socially_optimal_rate": 1.0
+  },
+  {
+    "avg_social_welfare_efficiency": 0.9202279550336909,
+    "avg_tokens_used": 247.25714285714287,
+    "avg_total_turns": 9.857142857142858,
+    "category_counts": "negotiation=35",
+    "consensus_rate": 0.9714285714285714,
+    "episodes": 35,
+    "percent": 0.35,
+    "scenario": "no_pair_shares_top",
+    "socially_optimal_given_consensus_rate": 0.4117647058823529,
+    "socially_optimal_rate": 0.4
+  }
+]

@@ -11,8 +11,8 @@ reported separately by category.
 The log is not reliable enough to classify.
 
 Use only for logging/parsing problems, such as missing `tokens_used`, missing
-`turns`, invalid actions, invalid votes outside `0..4`, or `consensus == true`
-with no valid `chosen_student`.
+`turns`, invalid actions, votes outside the episode's valid student indices, or
+`consensus == true` with no valid `chosen_student`.
 
 ### `stalled_coordination_failure`
 

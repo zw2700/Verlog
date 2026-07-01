@@ -20,7 +20,7 @@ set -euo pipefail
 # ============================================================================
 
 EXP_NOTES=(
-    "Added new episode logs for better analysis."
+    "Env changes: no termination on all voted no consensus + high correlation rejection"
 )
 
 echo "=== Experiment Notes ==="
@@ -122,19 +122,37 @@ export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_train_auton_${SLURM_JOB_ID
 # ============================================================================
 
 NUM_ENVS=32
+MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-4B}"
+ENABLE_THINKING="${ENABLE_THINKING:-false}"
+VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
+VAL_BEFORE_TRAIN="${VAL_BEFORE_TRAIN:-false}"
 BATCH_SIZE=256
 MINI_BATCH_SIZE=$((BATCH_SIZE))
 MICRO_BATCH_SIZE=4
 FORWARD_BATCH_SIZE=$((4 * MICRO_BATCH_SIZE))
 OFFLOAD=false
 PPO_EPOCHS=2
+STUDENTS_PER_BATCH="${STUDENTS_PER_BATCH:-5}"
+TERMINATE_ON_ALL_VOTED_NO_CONSENSUS="${TERMINATE_ON_ALL_VOTED_NO_CONSENSUS:-false}"
+PROFESSOR_PREFERENCE_MODE="${PROFESSOR_PREFERENCE_MODE:-random_permutation}"
+PREFERENCE_CORRELATION_THRESHOLD="${PREFERENCE_CORRELATION_THRESHOLD:-0.0}"
+PREFERENCE_REJECTION_MAX_ATTEMPTS="${PREFERENCE_REJECTION_MAX_ATTEMPTS:-1000}"
 
 echo "=== Training Configuration ==="
 echo "GPUs: $NUM_GPUS_PER_NODE"
 echo "CPUs: $SLURM_CPUS_PER_TASK"
+echo "Model path: $MODEL_PATH"
+echo "Chat template enable_thinking: $ENABLE_THINKING"
+echo "Validation batch size: $VAL_BATCH_SIZE"
+echo "Validation before train: $VAL_BEFORE_TRAIN"
 echo "Num Envs: $NUM_ENVS"
 echo "Batch Size: $BATCH_SIZE"
 echo "PPO Epochs: $PPO_EPOCHS"
+echo "Students per batch: $STUDENTS_PER_BATCH"
+echo "Terminate on all voted no consensus: $TERMINATE_ON_ALL_VOTED_NO_CONSENSUS"
+echo "Professor preference mode: $PROFESSOR_PREFERENCE_MODE"
+echo "Preference correlation threshold: $PREFERENCE_CORRELATION_THRESHOLD"
+echo "Preference rejection max attempts: $PREFERENCE_REJECTION_MAX_ATTEMPTS"
 echo "=============================="
 
 # ============================================================================
@@ -146,7 +164,7 @@ echo "=============================="
 # EXP_WANDB_PROJECT=wait_ratio_exps
 # EXP_NAME="train_auton_frank_${SLURM_JOB_ID}"
 # EXP_PROJECT_DIR="$PROJECT_DIR"
-# EXP_MODEL=Qwen/Qwen2.5-3B-Instruct
+# EXP_MODEL=$MODEL_PATH
 # EXP_ADV_ESTIMATOR=gae
 # EXP_BATCH_SIZE=$BATCH_SIZE
 # EXP_NUM_ENVS=$NUM_ENVS
@@ -174,9 +192,11 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     data.train_batch_size=${BATCH_SIZE} \
     data.max_prompt_length=4096 \
     data.max_response_length=512 \
+    data.val_batch_size=${VAL_BATCH_SIZE} \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     data.return_raw_chat=True \
+    +data.apply_chat_template_kwargs.enable_thinking=${ENABLE_THINKING} \
     data.train_files="$DATA_DIR/train.parquet" \
     data.val_files="$DATA_DIR/test.parquet" \
     actor_rollout_ref.rollout.mode=async \
@@ -188,7 +208,7 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${FORWARD_BATCH_SIZE} \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=16384 \
     actor_rollout_ref.rollout.agent.num_workers=${NUM_ENVS} \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-3B-Instruct \
+    actor_rollout_ref.model.path=${MODEL_PATH} \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
@@ -214,21 +234,25 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=${NUM_GPUS_PER_NODE} \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
-    trainer.test_freq=30 \
+    trainer.test_freq=-1 \
     trainer.total_epochs=15 \
     trainer.total_training_steps=75 \
-    trainer.val_before_train=True \
+    trainer.val_before_train=${VAL_BEFORE_TRAIN} \
     envs.num_envs=${NUM_ENVS} \
     envs.env_name=async_ticker_admissions \
     +envs.env_config.professor_ids='["prof_1","prof_2","prof_3"]' \
-    +envs.env_config.students_per_batch=5 \
+    +envs.env_config.students_per_batch=${STUDENTS_PER_BATCH} \
     +envs.env_config.token_budget=500 \
     +envs.env_config.feature_dim=5 \
     +envs.env_config.vote_threshold=0.5 \
     +envs.env_config.max_steps=50 \
+    +envs.env_config.terminate_on_all_voted_no_consensus=${TERMINATE_ON_ALL_VOTED_NO_CONSENSUS} \
+    +envs.env_config.professor_preference_mode=${PROFESSOR_PREFERENCE_MODE} \
+    +envs.env_config.preference_correlation_threshold=${PREFERENCE_CORRELATION_THRESHOLD} \
+    +envs.env_config.preference_rejection_max_attempts=${PREFERENCE_REJECTION_MAX_ATTEMPTS} \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
-    critic.model.path=Qwen/Qwen2.5-3B-Instruct \
+    critic.model.path=${MODEL_PATH} \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_epochs=${PPO_EPOCHS} \
     critic.ppo_micro_batch_size_per_gpu=${MICRO_BATCH_SIZE} \

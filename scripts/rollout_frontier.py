@@ -30,6 +30,10 @@ DEFAULT_ENV_CONFIG = {
     "feature_dim": 5,
     "vote_threshold": 0.5,
     "max_steps": 50,
+    "terminate_on_all_voted_no_consensus": False,
+    "professor_preference_mode": "random_permutation",
+    "preference_correlation_threshold": 0.0,
+    "preference_rejection_max_attempts": 1000,
 }
 
 
@@ -87,6 +91,29 @@ def _env_key(name: str, explicit_value: str | None) -> str:
     return value
 
 
+def _env_key_or_default(name: str, explicit_value: str | None, default: str) -> str:
+    if explicit_value:
+        return explicit_value
+    return os.environ.get(name) or default
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _json_env(name: str) -> dict[str, Any]:
+    value = os.environ.get(name)
+    if not value:
+        return {}
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ProviderError(f"{name} must be a JSON object")
+    return parsed
+
+
 def _extract_text_logprob_vote_metadata(output_text: str, content_logprobs: list[dict[str, Any]] | None) -> dict[str, Any] | None:
     """Best-effort vote metadata from OpenAI-compatible token logprobs."""
     if not content_logprobs:
@@ -138,6 +165,7 @@ class OpenAICompatibleClient(BaseClient):
         request_logprobs: bool,
         token_limit_field: str = "max_tokens",
         extra_headers: dict[str, str] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key
@@ -150,6 +178,7 @@ class OpenAICompatibleClient(BaseClient):
         self.request_logprobs = request_logprobs
         self.token_limit_field = token_limit_field
         self.extra_headers = extra_headers or {}
+        self.extra_body = extra_body or {}
 
     def complete(self, messages: list[dict[str, str]]) -> Completion:
         payload: dict[str, Any] = {
@@ -163,6 +192,7 @@ class OpenAICompatibleClient(BaseClient):
         if self.request_logprobs:
             payload["logprobs"] = True
             payload["top_logprobs"] = 20
+        payload.update(self.extra_body)
 
         raw = _http_json(
             f"{self.base_url}/chat/completions",
@@ -344,6 +374,26 @@ def make_client(args: argparse.Namespace) -> BaseClient:
             token_limit_field="max_tokens",
         )
 
+    if args.provider == "local-vllm":
+        extra_body = _json_env("LOCAL_VLLM_EXTRA_BODY_JSON")
+        if _env_flag("LOCAL_VLLM_DISABLE_THINKING", default=False):
+            chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
+            chat_template_kwargs["enable_thinking"] = False
+            extra_body["chat_template_kwargs"] = chat_template_kwargs
+        return OpenAICompatibleClient(
+            model=args.model,
+            api_key=_env_key_or_default(args.api_key_env or "LOCAL_VLLM_API_KEY", None, "dummy"),
+            base_url=args.base_url or os.environ.get("LOCAL_VLLM_BASE_URL") or "http://127.0.0.1:8000/v1",
+            temperature=args.temperature,
+            max_tokens=args.max_output_tokens,
+            timeout=args.timeout,
+            max_retries=args.max_retries,
+            top_p=args.top_p,
+            request_logprobs=args.request_logprobs,
+            token_limit_field="max_tokens",
+            extra_body=extra_body,
+        )
+
     if args.provider == "openai-compatible":
         if not args.base_url:
             raise ProviderError("--base-url is required for --provider openai-compatible")
@@ -392,6 +442,8 @@ def load_env_config(args: argparse.Namespace) -> dict[str, Any]:
     )
     if args.max_prompt_words is not None:
         config["max_prompt_words"] = args.max_prompt_words
+    if args.terminate_on_all_voted_no_consensus is not None:
+        config["terminate_on_all_voted_no_consensus"] = args.terminate_on_all_voted_no_consensus
     if args.reward_mode is not None:
         config["reward_mode"] = args.reward_mode
     if args.reward_alpha is not None:
@@ -402,6 +454,12 @@ def load_env_config(args: argparse.Namespace) -> dict[str, Any]:
         config["randomize_turn_order"] = True
     if args.utility_mode is not None:
         config["utility_mode"] = args.utility_mode
+    if args.professor_preference_mode is not None:
+        config["professor_preference_mode"] = args.professor_preference_mode
+    if args.preference_correlation_threshold is not None:
+        config["preference_correlation_threshold"] = args.preference_correlation_threshold
+    if args.preference_rejection_max_attempts is not None:
+        config["preference_rejection_max_attempts"] = args.preference_rejection_max_attempts
     if args.env_config_json:
         path = Path(args.env_config_json)
         overrides = json.loads(path.read_text()) if path.exists() else json.loads(args.env_config_json)
@@ -485,9 +543,16 @@ def run_episode(
         output_text = completion.text or ""
         now = datetime.utcnow().isoformat(timespec="seconds")
         prompt_tokens = completion.prompt_tokens
+        prompt_token_source = "provider_usage"
         if prompt_tokens is None:
             prompt_tokens = sum(len(str(message.get("content", "")).split()) for message in messages)
-        response_tokens = completion.response_tokens if completion.response_tokens is not None else len(output_text.split())
+            prompt_token_source = "estimated_whitespace"
+        response_token_source = "provider_usage"
+        if completion.response_tokens is not None:
+            response_tokens = completion.response_tokens
+        else:
+            response_tokens = len(output_text.split())
+            response_token_source = "estimated_whitespace"
 
         turn_entry = episode_logging.build_episode_turn_entry(
             timestamp=now,
@@ -502,6 +567,8 @@ def run_episode(
             messages=messages,
             output_text=output_text,
         )
+        turn_entry["prompt_token_source"] = prompt_token_source
+        turn_entry["response_token_source"] = response_token_source
         if include_raw_response and completion.raw is not None:
             turn_entry["provider_raw_response"] = completion.raw
         turns.append(turn_entry)
@@ -555,11 +622,16 @@ def run_episode(
     )
 
     metrics = flat_info.get("metrics") or {}
+    llm_input_tokens = sum(int(turn.get("prompt_tokens") or 0) for turn in turns)
+    llm_output_tokens = sum(int(turn.get("response_tokens") or 0) for turn in turns)
     return {
         "seed": seed,
         "env": env_idx,
         "episode_index": episode_index,
         "turns": len(turns),
+        "llm_input_tokens": llm_input_tokens,
+        "llm_output_tokens": llm_output_tokens,
+        "llm_total_tokens": llm_input_tokens + llm_output_tokens,
         "consensus": bool((flat_info.get("episode_state") or {}).get("consensus_reached", False)),
         "chosen_student_rank_global": metrics.get("outcome/chosen_student_rank_global"),
         "social_welfare_efficiency": metrics.get("social_welfare/efficiency"),
@@ -572,7 +644,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--provider",
         required=True,
-        choices=["openai", "anthropic", "openrouter", "cmu-gateway", "openai-compatible", "fake"],
+        choices=["openai", "anthropic", "openrouter", "cmu-gateway", "local-vllm", "openai-compatible", "fake"],
     )
     parser.add_argument("--model", default="gpt-4o-mini")
     parser.add_argument("--base-url", default=None)
@@ -598,6 +670,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--feature-dim", type=int, default=5)
     parser.add_argument("--vote-threshold", type=float, default=0.5)
     parser.add_argument("--max-steps", type=int, default=50)
+    parser.add_argument("--terminate-on-all-voted-no-consensus", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prompt-length", type=int, default=4096)
     parser.add_argument("--max-prompt-words", type=int, default=None)
     parser.add_argument("--reward-mode", choices=["individual", "group", "combined"], default=None)
@@ -605,6 +678,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show-ability-vectors", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--randomize-turn-order", action="store_true")
     parser.add_argument("--utility-mode", choices=["linear", "squared", "exp"], default=None)
+    parser.add_argument(
+        "--professor-preference-mode",
+        choices=[
+            "random_permutation",
+            "diverse_top_feature",
+            "rejection_low_correlation",
+            "rejection_low_correlation_distinct_top",
+        ],
+        default=None,
+    )
+    parser.add_argument("--preference-correlation-threshold", type=float, default=None)
+    parser.add_argument("--preference-rejection-max-attempts", type=int, default=None)
     parser.add_argument("--env-config-json", default=None, help="JSON string or path to a JSON object of env config overrides.")
     return parser.parse_args()
 
@@ -662,6 +747,7 @@ def main() -> None:
         print(
             f"[{i + 1}/{args.num_episodes}] seed={result['seed']} env={result['env']} "
             f"turns={result['turns']} consensus={result['consensus']} "
+            f"llm_tokens={result['llm_input_tokens']}+{result['llm_output_tokens']} "
             f"rank={result['chosen_student_rank_global']} "
             f"sw_eff={result['social_welfare_efficiency']} "
             f"elapsed={result['elapsed_sec']:.1f}s",
@@ -670,9 +756,14 @@ def main() -> None:
 
     consensus = sum(1 for result in results if result["consensus"])
     socially_optimal = sum(1 for result in results if result["chosen_student_rank_global"] == 1)
+    llm_input_tokens = sum(int(result["llm_input_tokens"]) for result in results)
+    llm_output_tokens = sum(int(result["llm_output_tokens"]) for result in results)
     print(
         f"Done. consensus_rate={consensus / max(len(results), 1):.3f} "
-        f"socially_optimal_rate={socially_optimal / max(len(results), 1):.3f}"
+        f"socially_optimal_rate={socially_optimal / max(len(results), 1):.3f} "
+        f"llm_input_tokens={llm_input_tokens} "
+        f"llm_output_tokens={llm_output_tokens} "
+        f"llm_total_tokens={llm_input_tokens + llm_output_tokens}"
     )
 
 
