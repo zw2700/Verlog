@@ -133,3 +133,10 @@ outputs
 # monitor/ runtime files (config + generated settings)
 monitor/monitor.env
 monitor/_monitor-settings.json
+
+# site-specific slurm config + secrets
+slurm/auton.env
+
+# keep the Hydra env config group (the ENV/ venv rule matches it on case-insensitive FS)
+!configs/env/
+!configs/env/*

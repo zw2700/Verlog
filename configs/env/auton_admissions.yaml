@@ -1,0 +1,24 @@
+# Environment config group for the async ticker admissions env.
+# Selected in an experiment via:  defaults: [ - env@envs: auton_admissions ]
+# These keys are merged into the top-level `envs` node of ppo_trainer.
+#
+# Override any of these on the CLI, e.g.:
+#   envs.num_envs=16 envs.env_config.students_per_batch=7
+
+num_envs: 32
+
+env_name: async_ticker_admissions
+
+# Everything under env_config is passed through to the env constructor.
+# (In Frank's sbatch these were the `+envs.env_config.*` additions.)
+env_config:
+  professor_ids: ["prof_1", "prof_2", "prof_3"]
+  students_per_batch: 5
+  token_budget: 500
+  feature_dim: 5
+  vote_threshold: 0.5
+  max_steps: 50
+  terminate_on_all_voted_no_consensus: false
+  professor_preference_mode: random_permutation
+  preference_correlation_threshold: 0.0
+  preference_rejection_max_attempts: 1000
