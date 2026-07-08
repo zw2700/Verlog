@@ -1,0 +1,4 @@
+interface:
+  display_name: "Slurm"
+  short_description: "Operate Rhea Slurm hiring-env jobs"
+  default_prompt: "Use $slurm to inspect current Rhea hiring-env jobs for this repo."
