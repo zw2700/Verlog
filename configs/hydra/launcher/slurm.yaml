@@ -1,0 +1,28 @@
+# Optional: Hydra Submitit launcher so `--multirun` submits one Slurm job per
+# sweep cell directly — no sbatch file at all. Requires:
+#   pip install hydra-submitit-launcher
+#
+# Use it (from repo root, with slurm/auton.env values exported):
+#   python -m verl.trainer.main_ppo --config-name=train_auton --multirun \
+#       hydra/launcher=slurm \
+#       envs.env_config.students_per_batch=3,5,7
+#
+# Each of the 3 values becomes its own Slurm job. See slurm/README.md for the
+# trade-offs vs. the thin-sbatch path (this one is the more experimental route
+# because the Ray/GPU setup has to run inside `setup` below).
+#
+# @package hydra.launcher
+_target_: hydra_plugins.hydra_submitit_launcher.submitit_launcher.SlurmLauncher
+submitit_folder: ${hydra.sweep.dir}/.submitit/%j
+partition: general
+qos: qos_general
+nodes: 1
+tasks_per_node: 1
+cpus_per_task: 32
+mem_gb: 200
+timeout_min: 2879          # 47:59:00
+gres: gpu:a6000:4
+# Runs on the compute node before the training function. Mirrors slurm/common.sh
+# so Ray cleanup + GPU/vLLM env vars are in place. Adjust the path if needed.
+setup:
+  - "source ${hydra.runtime.cwd}/slurm/common.sh"

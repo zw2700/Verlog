@@ -38,7 +38,7 @@ bash monitor/launch_monitor.sh
 The monitor's `PROMPT` references `${SMOKETEST_DIR}/logs/*.events.log`,
 `${SMOKETEST_DIR}/ckpts/`, `${WANDB_PROJECT}`, etc. — all of those come from
 `monitor.env`, so a different user can point this at a different scratch dir
-and a different wandb project without editing the script.
+and a different W&B project or optional entity without editing the script.
 
 ## What lives in `claude-tools/` instead
 

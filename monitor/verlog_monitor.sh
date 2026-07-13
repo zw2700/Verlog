@@ -43,7 +43,8 @@ source "$SLACK_LIB"
 : "${SLACK_CHANNEL_ID:?monitor.env must set SLACK_CHANNEL_ID}"
 : "${SLACK_TOKEN_FILE:?monitor.env must set SLACK_TOKEN_FILE}"
 : "${SMOKETEST_DIR:?monitor.env must set SMOKETEST_DIR (path to logs/ckpts root)}"
-: "${WANDB_PROJECT:?monitor.env must set WANDB_PROJECT (e.g. aseo-carnegie-mellon-university/verlog-gambit)}"
+: "${WANDB_ENTITY:=}"
+: "${WANDB_PROJECT:=unscripted}"
 : "${WANDB_KEY_FILE:?monitor.env must set WANDB_KEY_FILE}"
 : "${CONDA_ENV_PATH:?monitor.env must set CONDA_ENV_PATH}"
 : "${CONDA_SH:?monitor.env must set CONDA_SH (path to conda.sh)}"
@@ -74,8 +75,8 @@ Check, in order:
 1. squeue -u ${USER_NAME} — list each verlog job with JOBID, NAME, PARTITION, STATE, RUNTIME.
 2. ${SMOKETEST_DIR}/logs/*.events.log — show the last 5 lines of each.
 3. ${SMOKETEST_DIR}/ckpts/ — list any checkpoint dirs (global_step_*).
-4. wandb runs in ${WANDB_PROJECT}. To query, use this conda env + key:
-   source ${CONDA_SH} && conda activate ${CONDA_ENV_PATH} && export WANDB_API_KEY=\$(cat ${WANDB_KEY_FILE}) && python3 -c \"import wandb; api=wandb.Api(); [print(r.id, r.name, r.state, r.summary.get('training/global_step','?'), r.summary.get('critic/vf_loss','?'), r.summary.get('actor/entropy','?')) for r in api.runs('${WANDB_PROJECT}', per_page=20)]\"
+4. wandb runs in project ${WANDB_PROJECT} under ${WANDB_ENTITY:-the active W&B entity}. To query, use this conda env + key:
+   source ${CONDA_SH} && conda activate ${CONDA_ENV_PATH} && export WANDB_API_KEY=\$(cat ${WANDB_KEY_FILE}) && python3 -c \"import wandb; api=wandb.Api(); project='${WANDB_PROJECT}'; entity='${WANDB_ENTITY:-}' or api.default_entity; path=project if '/' in project else f'{entity}/{project}'; [print(r.id, r.name, r.state, r.summary.get('training/global_step','?'), r.summary.get('critic/vf_loss','?'), r.summary.get('actor/entropy','?')) for r in api.runs(path, per_page=20)]\"
 5. Read ${SUMMARY_LOG} (the last ~200 lines) to see the prior iterations.
 
 Then output (and ONLY output):

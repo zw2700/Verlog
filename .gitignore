@@ -8,6 +8,8 @@
 **/*.tar.gz
 **/playground
 **/wandb
+!.agents/skills/wandb/
+!.agents/skills/wandb/**
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -136,3 +138,9 @@ monitor/_monitor-settings.json
 
 # local git workflow notes
 GIT_GUIDELINE.md
+# site-specific slurm config + secrets
+slurm/auton.env
+
+# keep the Hydra env config group (the ENV/ venv rule matches it on case-insensitive FS)
+!configs/env/
+!configs/env/*
