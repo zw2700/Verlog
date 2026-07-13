@@ -755,15 +755,16 @@ class ToolAgentLoop(AgentLoopBase):
                     game_entries.append(
                         self._format_episode_diagnosis(env_idx, reward, _flat_info)
                     )
-                self._append_episode_jsonl_log(
-                    epoch=epoch,
-                    global_steps=global_steps,
-                    env_idx=env_idx,
-                    episode_index=episode_index,
-                    turns=episode_turns,
-                    reward=reward,
-                    info=_flat_info,
-                )
+                with _phase(profile, "episode_jsonl_log"):
+                    self._append_episode_jsonl_log(
+                        epoch=epoch,
+                        global_steps=global_steps,
+                        env_idx=env_idx,
+                        episode_index=episode_index,
+                        turns=episode_turns,
+                        reward=reward,
+                        info=_flat_info,
+                    )
                 episode_turns = []
                 episode_index += 1
             else:

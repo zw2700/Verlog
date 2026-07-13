@@ -919,13 +919,8 @@ class RayPPOTrainer:
         )
 
         print(f"local_global_step_folder: {local_global_step_folder}")
-        actor_local_path = os.path.join(local_global_step_folder, "actor")
-
-        actor_remote_path = (
-            None
-            if self.config.trainer.default_hdfs_dir is None
-            else os.path.join(self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor")
-        )
+        save_actor_checkpoint = self.config.trainer.get("save_actor_checkpoint", True)
+        save_critic_checkpoint = self.config.trainer.get("save_critic_checkpoint", True)
 
         remove_previous_ckpt_in_save = self.config.trainer.get("remove_previous_ckpt_in_save", False)
         if remove_previous_ckpt_in_save:
@@ -940,11 +935,20 @@ class RayPPOTrainer:
             self.config.trainer.get("max_critic_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
         )
 
-        self.actor_rollout_wg.save_checkpoint(
-            actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep
-        )
+        if save_actor_checkpoint:
+            actor_local_path = os.path.join(local_global_step_folder, "actor")
 
-        if self.use_critic:
+            actor_remote_path = (
+                None
+                if self.config.trainer.default_hdfs_dir is None
+                else os.path.join(self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor")
+            )
+
+            self.actor_rollout_wg.save_checkpoint(
+                actor_local_path, actor_remote_path, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep
+            )
+
+        if self.use_critic and save_critic_checkpoint:
             critic_local_path = os.path.join(local_global_step_folder, "critic")
             critic_remote_path = (
                 None
@@ -954,6 +958,11 @@ class RayPPOTrainer:
             self.critic_wg.save_checkpoint(
                 critic_local_path, critic_remote_path, self.global_steps, max_ckpt_to_keep=max_critic_ckpt_to_keep
             )
+
+        is_resumeable_checkpoint = save_actor_checkpoint and (not self.use_critic or save_critic_checkpoint)
+        if not is_resumeable_checkpoint:
+            print("Skipping dataloader state and latest checkpoint tracker for non-resumeable checkpoint.")
+            return
 
         # save dataloader
         local_mkdir_safe(local_global_step_folder)
@@ -1403,10 +1412,26 @@ class RayPPOTrainer:
                 # one of the following optional conditions (2/3/4):
                 # 1. The save frequency is set to a positive value.
                 # 2. It's the last training step.
-                # 3. The current step number is a multiple of the save frequency.
+                # 3. The current step number matches the save frequency and offset.
                 # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
-                if self.config.trainer.save_freq > 0 and (
-                    is_last_step or self.global_steps % self.config.trainer.save_freq == 0 or esi_close_to_expiration
+                save_freq = self.config.trainer.save_freq
+                save_freq_offset = self.config.trainer.get("save_freq_offset", 0)
+                explicit_save_steps = self.config.trainer.get("save_steps", None)
+                if isinstance(explicit_save_steps, str):
+                    explicit_save_steps = [
+                        step.strip()
+                        for step in explicit_save_steps.strip("[]").split(",")
+                        if step.strip()
+                    ]
+                is_explicit_save_step = (
+                    explicit_save_steps is not None
+                    and self.global_steps in {int(step) for step in explicit_save_steps}
+                )
+                is_save_step = save_freq > 0 and self.global_steps >= save_freq_offset and (
+                    self.global_steps - save_freq_offset
+                ) % save_freq == 0
+                if is_explicit_save_step or (
+                    save_freq > 0 and (is_last_step or is_save_step or esi_close_to_expiration)
                 ):
                     if esi_close_to_expiration:
                         print("Force saving checkpoint: ESI instance expiration approaching.")
