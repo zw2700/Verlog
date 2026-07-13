@@ -1,0 +1,4 @@
+interface:
+  display_name: "W&B"
+  short_description: "Inspect W&B runs for this repo"
+  default_prompt: "Use $wandb to check the latest unscripted hiring-env training runs."
