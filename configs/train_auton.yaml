@@ -1,19 +1,5 @@
-# Composable experiment config for the auton admissions training run.
-#
-# This replaces the ~80-line wall of `key=value` overrides that used to live
-# inside train_auton_frank.sbatch. It composes:
-#   ppo_trainer (verl base)  ->  env/auton_admissions  ->  the overrides below.
-#
-# (The old sbatch used --config-name=gsm8k_multiturn_grpo; the only settings that
-# base contributed and Frank did not already override were hybrid_engine and the
-# multi_turn block, both inlined below. So we compose over ppo_trainer directly
-# and keep a single searchpath entry.)
-#
-# Run it (from the repo root, so the relative searchpath resolves):
-#   python -m verl.trainer.main_ppo --config-path=configs --config-name=train_auton
-#
-# Override anything on the CLI, and sweep with -m / --multirun:
-#   ... --config-name=train_auton envs.env_config.students_per_batch=3,5,7 -m
+# Canonical Auton admissions training config. All Rhea runs use this config via
+# slurm/train_auton.sbatch; experiment changes are explicit Hydra overrides.
 
 hydra:
   searchpath:
@@ -24,14 +10,13 @@ defaults:
   - env@envs: auton_admissions
   - _self_
 
-# Resolved once, reused by actor + critic. Override with MODEL_PATH env var or
-# actor_rollout_ref.model.path=... on the CLI.
+# Resolved once and reused by actor, reference, and critic models. Override with
+# MODEL_PATH or model_path=... on the sbatch command line.
 model_path: ${oc.env:MODEL_PATH,Qwen/Qwen3-4B}
 
-# Short label for this run, surfaced in the wandb run name (see
-# trainer.experiment_name below). For an ablation, override just this:
+# Short label surfaced in the W&B run name. Keep it synchronized with the
+# experiment override, for example:
 #   sbatch slurm/train_auton.sbatch tag=students7 envs.env_config.students_per_batch=7
-# -> wandb run name "auton_students7_<jobid>".
 tag: base
 
 algorithm:
@@ -42,17 +27,16 @@ data:
   train_batch_size: 256
   max_prompt_length: 4096
   max_response_length: 512
-  val_batch_size: ${oc.env:VAL_BATCH_SIZE,64}
+  val_batch_size: ${oc.decode:${oc.env:VAL_BATCH_SIZE,64}}
   filter_overlong_prompts: true
   truncation: error
   return_raw_chat: true
   apply_chat_template_kwargs:
-    enable_thinking: ${oc.env:ENABLE_THINKING,false}
+    enable_thinking: ${oc.decode:${oc.env:ENABLE_THINKING,false}}
   train_files: ${oc.env:DATA_DIR}/train.parquet
   val_files: ${oc.env:DATA_DIR}/test.parquet
 
 actor_rollout_ref:
-  # Inlined from the old gsm8k_multiturn_grpo base.
   hybrid_engine: true
   model:
     path: ${model_path}
@@ -61,7 +45,6 @@ actor_rollout_ref:
   rollout:
     mode: async
     name: vllm
-    # Inlined from the old gsm8k_multiturn_grpo base.
     multi_turn:
       enable: true
       max_assistant_turns: 100000
@@ -115,12 +98,12 @@ trainer:
   critic_warmup_batch_repeat_times: 40
   critic_warmup_batch_divide_ratio: 4
   logger: ["console", "wandb"]
-  project_name: wait_ratio_exps
-  experiment_name: auton_${tag}_${oc.env:SLURM_JOB_ID,local}
-  n_gpus_per_node: ${oc.env:NUM_GPUS_PER_NODE,4}
+  project_name: unscripted
+  experiment_name: unscripted_auton_${tag}_${oc.env:SLURM_JOB_ID,local}
+  n_gpus_per_node: ${oc.decode:${oc.env:NUM_GPUS_PER_NODE,4}}
   nnodes: 1
   save_freq: -1
   test_freq: -1
   total_epochs: 15
   total_training_steps: 75
-  val_before_train: ${oc.env:VAL_BEFORE_TRAIN,false}
+  val_before_train: ${oc.decode:${oc.env:VAL_BEFORE_TRAIN,false}}

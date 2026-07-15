@@ -22,20 +22,20 @@
 #
 # For an ablation, set `tag` so the wandb run name is self-describing:
 #   sbatch slurm/train_auton.sbatch tag=students7 envs.env_config.students_per_batch=7
-#   -> wandb run name "auton_students7_<jobid>"
+#   -> wandb run name "unscripted_auton_students7_<jobid>"
 #
-# Pick a different experiment config without editing this file:
-#   EXP=train_auton_smoke sbatch slurm/train_auton.sbatch
+set -euo pipefail
 
-source "$(cd "$(dirname "$0")" && pwd)/common.sh"
-
-EXP="${EXP:-train_auton}"
+# Slurm runs a spool copy of this script, so $0 does not point into the repo.
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
+source "$PROJECT_DIR/slurm/common.sh"
 
 # experiment_name is built in the config from `tag` + $SLURM_JOB_ID, so we do NOT
 # override it here — that keeps `tag=...` visible in the wandb run name.
-$PYTHON_BIN -m verl.trainer.main_ppo \
+"$PYTHON_BIN" -m verl.trainer.main_ppo \
     --config-path="$PROJECT_DIR/configs" \
-    --config-name="$EXP" \
+    --config-name=train_auton \
+    ray_kwargs.ray_init.num_cpus="$SLURM_CPUS_PER_TASK" \
     "$@"
 
 echo "=== Done ${JOB_ID} — $(date) ==="

@@ -9,10 +9,10 @@ composable config files, **not** in the sbatch. Do not paste walls of `key=value
 into new sbatch scripts — override the Hydra config instead.
 
 Key files:
-- `configs/train_auton.yaml` — the experiment config (composes over `ppo_trainer`).
+- `configs/train_auton.yaml` — the canonical training config (composes over `ppo_trainer`).
 - `configs/env/auton_admissions.yaml` — env params (`num_envs`, `env_config.*` such as
   `professor_ids`, `students_per_batch`, `token_budget`, `vote_threshold`, …).
-- `slurm/train_auton.sbatch` — thin, generic wrapper. Never hardcode experiment params here.
+- `slurm/train_auton.sbatch` — the only supported Rhea training entrypoint. Never hardcode experiment params here.
 - `slurm/common.sh` — node/env/Ray setup (sourced by the sbatch).
 - `slurm/README.md` — full human-facing docs.
 
@@ -29,7 +29,7 @@ sbatch slurm/train_auton.sbatch tag=students7 envs.env_config.students_per_batch
 ```
 
 This yields a **traceable run**:
-- wandb **run name** = `auton_students7_<jobid>` (from `tag` -> `trainer.experiment_name`
+- wandb **run name** = `unscripted_auton_students7_<jobid>` (from `tag` -> `trainer.experiment_name`
   -> `wandb.init(name=...)`).
 - wandb **config panel** = the full resolved Hydra config, including
   `envs.env_config.students_per_batch = 7`, filterable/groupable in the UI
@@ -58,17 +58,15 @@ for s in 3 5 7; do
 done
 ```
 
-A Hydra `--multirun` + Submitit path also exists (`configs/hydra/launcher/slurm.yaml`),
-but it's more experimental here — see `slurm/README.md` before using it.
-
 ### Before running / reporting
 
-- Runs need `slurm/auton.env` (copy from `slurm/auton.env.example`: `ENV_PATH`,
-  `DATA_DIR`, `WANDB_API_KEY`). It's git-ignored — never commit it or a real API key.
-- When reporting an ablation, cite the **wandb run name** (`auton_<tag>_<jobid>`) and the
+- Runs need `slurm/auton.env` (install from `slurm/auton.env.example` and verify
+  `ENV_PATH`, `DATA_DIR`, and `MODEL_PATH`). It is git-ignored and must remain private.
+  Standard `wandb login` state is sufficient; `WANDB_API_KEY` is optional.
+- When reporting an ablation, cite the **wandb run name** (`unscripted_auton_<tag>_<jobid>`) and the
   exact override(s) used, so the run is reproducible from the report alone.
-- The legacy `train_auton_frank.sbatch` is kept only until the Hydra path is
-  cluster-validated. Don't extend it; add to the config-based path instead.
+- Every Rhea training job must use `slurm/train_auton.sbatch`. Do not add copied
+  sbatch launchers or alternate submission paths; use explicit Hydra overrides.
 # Repository Guidelines
 
 ## Project Context
@@ -91,7 +89,7 @@ Be precise about terminology:
 - `verl/envs/environments/__init__.py`: Registers `async_ticker_admissions` with the VERL environment factory.
 - `verl/envs/hiring_episode_logging.py`: Training-compatible JSONL episode logging and action-summary helpers.
 - `verl/experimental/agent_loop/tool_agent_loop.py`: Multi-agent/tool loop integration; changes here affect rollout behavior.
-- `examples/sglang_multiturn/config/`: Existing VERL configs reused by Verlog runs. The current hiring-env launcher still uses `gsm8k_multiturn_grpo` as the base config.
+- `examples/sglang_multiturn/config/`: Upstream VERL examples retained for reference. Rhea training uses `configs/train_auton.yaml`.
 - `analysis/`: Research analysis artifacts, category labels, preference-scenario summaries, plots, and report scripts.
 - `scripts/rollout_frontier.py`: Frontier/API model rollouts for the hiring env.
 - `scripts/rollout_viewer.py`: Local inspection utility for rollout logs.
@@ -149,7 +147,7 @@ model default: Qwen/Qwen3-4B
 W&B project: unscripted
 ```
 
-For launchers, start from `.agents/skills/slurm/assets/train_auton_unscripted_example.sbatch`, use W&B project `unscripted`, and source secrets from private files instead of embedding tokens. Do not set a default W&B entity; each user should log to their own active W&B entity unless `WANDB_ENTITY` is explicitly set.
+Every project run must use `slurm/train_auton.sbatch` with private paths and optional secrets in the git-ignored `slurm/auton.env`. The launcher must preserve Slurm's `CUDA_VISIBLE_DEVICES`, pass `SLURM_CPUS_PER_TASK` explicitly to Ray, and use job-scoped Ray temporary state. Experiment changes belong in explicit Hydra overrides, not copied launchers. Use W&B project `unscripted`; do not set a default W&B entity, so each user logs to their active entity unless `WANDB_ENTITY` is explicitly set.
 
 Ask before major remote actions: creating remote directories, syncing the repo to Rhea, installing packages, submitting jobs, cancelling jobs, or changing long-running monitor state.
 
@@ -179,7 +177,7 @@ Default W&B project for this repo is `unscripted`. The entity is the user's acti
 - Keep large generated logs, checkpoints, W&B runtime folders, caches, and temporary files out of Git.
 - Put the Rhea project checkout and high-volume artifacts under `/zfsauton/scratch`, not home directories.
 - Never add new literal API keys or tokens to sbatch files or docs.
-- Existing launchers may contain sensitive historical values. Do not print, copy, or normalize them into new files.
+- Never print, copy, or commit credentials found in local or remote runtime files.
 - Episode logs are research artifacts. If changing their schema, update readers and analysis scripts in the same change.
 
 ## Documentation Expectations
