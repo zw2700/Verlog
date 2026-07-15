@@ -28,12 +28,12 @@ export HF_HOME=/zfsauton/scratch/cpulling/.cache/huggingface
 export TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1 VLLM_USE_V1=1 PYTHONUNBUFFERED=1 FLA_TILELANG=0
 export TRITON_CACHE_DIR=/zfsauton/scratch/cpulling/.triton_cache
 export PYTHONPATH=$PWD
-export RAY_TMPDIR=/zfsauton/scratch/cpulling/ray_consensus_${SLURM_JOB_ID}
+export RAY_TMPDIR=/tmp/r${SLURM_JOB_ID}
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null)
 
 MODEL="Qwen/Qwen3.5-0.8B"
 NUM_ENVS=4
-DATA=/zfsauton/scratch/cpulling/data   # TODO: point train_files at a real parquet in here
+DATA=/zfsauton/scratch/cpulling/data
 
 $PY -m verl.trainer.main_ppo \
   algorithm.adv_estimator=gae_dual \
@@ -54,16 +54,21 @@ $PY -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.kl_loss_coef=0.01 \
   actor_rollout_ref.actor.use_remove_padding=False \
   actor_rollout_ref.actor.use_dynamic_bsz=False \
+  actor_rollout_ref.actor.ppo_mini_batch_size=16 \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=4 \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=4 \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   critic.model.path="$MODEL" \
   critic.model.use_remove_padding=False \
   critic.use_dynamic_bsz=False \
+  critic.ppo_micro_batch_size_per_gpu=2 \
   envs.env_name=async_ticker_admissions \
   envs.num_envs=$NUM_ENVS \
   envs.env_config.reward_mode=individual \
   data.train_batch_size=64 \
-  data.train_files=$DATA/dummy_train.parquet \
-  data.val_files=$DATA/dummy_train.parquet \
+  data.train_files=$DATA/consensus_dummy.parquet \
+  data.val_files=$DATA/consensus_dummy.parquet \
   trainer.critic_warmup=1 \
   trainer.total_training_steps=2 \
   trainer.total_epochs=1 \
