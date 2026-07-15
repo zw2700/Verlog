@@ -390,3 +390,22 @@ ray_kwargs:
 
   # Path to save Ray timeline JSON for performance profiling
   timeline_json_file: null
+
+# Verlog multi-agent environment (env-driven rollout). Leave env_name null for the stock
+# dataset-driven path; set env_name (e.g. async_ticker_admissions) to enable env mode.
+# num_envs MUST equal actor_rollout_ref.rollout.agent.num_workers.
+envs:
+  env_name: null
+  task: null
+  num_envs: 8
+  env_config:
+    professor_ids: [prof_1, prof_2, prof_3]
+    students_per_batch: 5
+    feature_dim: 5
+    token_budget: 1000
+    max_steps: 100
+    vote_threshold: 0.5
+    utility_mode: linear
+    reward_mode: individual
+    show_ability_vectors: true
+    randomize_turn_order: false
