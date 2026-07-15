@@ -1047,16 +1047,18 @@ class AgentLoopWorker:
             "image_grid_thw": multi_modal_inputs.get("image_grid_thw"),
             "video_grid_thw": multi_modal_inputs.get("video_grid_thw"),
         }
-        # For transformers>=5.3.0, mm_token_type_ids is only used to calculate position ids.
-        if multi_modal_inputs.pop("mm_token_type_ids", None) is not None:
-            mm_token_type_ids = torch.zeros_like(input_ids)
-            image_token_id = get_processor_token_id(self.processor, "image")
-            video_token_id = get_processor_token_id(self.processor, "video")
-            if image_token_id is not None:
-                mm_token_type_ids[0][input_ids[0] == image_token_id] = 1
-            if video_token_id is not None:
-                mm_token_type_ids[0][input_ids[0] == video_token_id] = 2
-            multi_modal_kwargs["mm_token_type_ids"] = mm_token_type_ids
+        # transformers>=5.3.0 requires mm_token_type_ids (0=text, 1=image, 2=video) for get_rope_index.
+        # Always build it (all-zeros for text-only) so the text-only path on a VL model (e.g. Qwen3.5
+        # in the hiring env) doesn't crash with "missing required argument 'mm_token_type_ids'".
+        multi_modal_inputs.pop("mm_token_type_ids", None)
+        mm_token_type_ids = torch.zeros_like(input_ids)
+        image_token_id = get_processor_token_id(self.processor, "image")
+        video_token_id = get_processor_token_id(self.processor, "video")
+        if image_token_id is not None:
+            mm_token_type_ids[0][input_ids[0] == image_token_id] = 1
+        if video_token_id is not None:
+            mm_token_type_ids[0][input_ids[0] == video_token_id] = 2
+        multi_modal_kwargs["mm_token_type_ids"] = mm_token_type_ids
 
         # Model's get_rope_index has been dynamically bind to the processor.
         vision_position_ids, _ = self.processor.get_rope_index(
