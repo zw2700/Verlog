@@ -67,7 +67,15 @@ algorithm:
   # Trade-off between bias and variance in the GAE estimator
   lam: 1.0
 
-  # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", etc.
+  # Verlog dual-discounting GAE (adv_estimator="gae_dual"): turn-level discount across
+  # turns within each (env, agent) chain, on top of the token-level discount within a turn.
+  # Neutral (1.0) reduces to single-level GAE. Recommended: step_gamma 0.99-0.995, step_lam 0.95.
+  token_gamma: 1.0
+  step_gamma: 1.0
+  token_lam: 1.0
+  step_lam: 1.0
+
+  # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", "gae_dual" (multi-agent), etc.
   adv_estimator: gae
 
   # Whether to normalize advantages by std (specific to GRPO)

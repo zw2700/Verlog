@@ -263,6 +263,142 @@ def compute_gae_advantage_return(
     return advantages, returns
 
 
+@register_adv_est("gae_dual")
+def compute_gae_advantage_return_dual(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    dones: torch.Tensor,
+    token_gamma: float = 1.0,
+    step_gamma: float = 1.0,
+    token_lam: float = 1.0,
+    step_lam: float = 1.0,
+    episode_structure: list[list[int]] | None = None,
+):
+    """Verlog dual-discounting GAE (ported from the verl-0.6 Verlog fork).
+
+    Two-level discounting for multi-turn, multi-agent episodes:
+      * ``step_gamma`` / ``step_lam``  discount *across turns* within one agent's
+        episode chain (the turn-level GAE).
+      * ``token_gamma`` / ``token_lam`` discount *across tokens* within a turn
+        (currently only the ``token_gamma == token_lam == 1.0`` special case is
+        implemented; broadcast turn credit uniformly to the turn's tokens).
+
+    Turn ordering/grouping is NOT encoded in a mask tensor — it is supplied by the
+    trainer's multi-agent credit path as ``episode_structure``: a list of row-index
+    lists, one per ``(env_idx, agent_id)`` chain, each ordered by ``turn_id``. The
+    final row of every chain is a pure value-carrier (advantage forced to 0) used only
+    to bootstrap V(s); the trainer strips it before the gradient step. ``dones`` marks
+    the last real turn of each episode so GAE does not bootstrap across episode
+    boundaries within a chain.
+
+    Args:
+        token_level_rewards: ``(bs, response_length)`` per-token rewards (turn scalar
+            reward is placed on the turn's last real token by the trainer).
+        values: ``(bs, response_length)`` critic values; ``values[:, 0]`` is used as
+            the turn's V(s).
+        response_mask: ``(bs, response_length)`` LLM-token mask.
+        dones: ``(bs,)`` bool/float, 1.0 on the terminal turn of each episode chain.
+        episode_structure: ``list[list[int]]`` of per-(env, agent) row-index chains.
+
+    Returns:
+        advantages, returns: both ``(bs, response_length)``.
+    """
+    advantages_fp32, returns_fp32 = compute_gae_advantage_return_dual_core(
+        token_level_rewards=token_level_rewards.float(),
+        values=values.float(),
+        response_mask=response_mask.float(),
+        dones=dones.float(),
+        episode_structure=episode_structure,
+        step_gamma=float(step_gamma),
+        step_lam=float(step_lam),
+        token_gamma=float(token_gamma),
+        token_lam=float(token_lam),
+    )
+    return advantages_fp32, returns_fp32
+
+
+def compute_gae_advantage_return_dual_core(
+    token_level_rewards: torch.Tensor,
+    values: torch.Tensor,
+    response_mask: torch.Tensor,
+    dones: torch.Tensor,
+    episode_structure: list[list[int]],
+    token_gamma: float = 1.0,
+    step_gamma: float = 1.0,
+    token_lam: float = 1.0,
+    step_lam: float = 1.0,
+):
+    with torch.no_grad():
+        # ---- turn level: collapse each turn to a scalar (V, r) ----
+        turn_values = values[:, 0].clone()  # [B]  value at the turn's first token
+        turn_rewards = token_level_rewards.clone().sum(-1)  # [B]  turn scalar reward
+
+        turn_advantages = torch.zeros_like(turn_values)
+        turn_returns = torch.zeros_like(turn_values)
+
+        for ep_indices in episode_structure:
+            ep_rewards = turn_rewards[ep_indices].clone()
+            ep_values = turn_values[ep_indices].clone()
+            ep_dones = dones[ep_indices].clone()
+
+            T = len(ep_indices)
+            ep_advantages = torch.zeros_like(ep_values)
+            gae = 0
+
+            for t in reversed(range(T)):
+                if t == T - 1:
+                    # last row of the chain is a pure value-carrier / bootstrap row
+                    ep_advantages[t] = 0.0
+                else:
+                    next_value = ep_values[t + 1]
+                    next_non_terminal = 1.0 - ep_dones[t] * 1.0
+                    delta = ep_rewards[t] + step_gamma * next_value * next_non_terminal - ep_values[t]
+                    gae = delta + step_gamma * step_lam * next_non_terminal * gae
+                    ep_advantages[t] = gae
+
+            ep_returns = ep_advantages + ep_values
+
+            turn_advantages[ep_indices] = ep_advantages
+            turn_returns[ep_indices] = ep_returns
+
+        # ---- broadcast turn-level results back onto each turn's tokens ----
+        nextvalues = torch.zeros_like(turn_values)  # (bs,)
+        lastgaelam = torch.zeros_like(turn_values)  # (bs,)
+        for ep_indices in episode_structure:
+            ep_dones = dones[ep_indices].clone()
+            ep_values = turn_values[ep_indices].clone()
+            next_ep_values = torch.cat(
+                [ep_values[1:], torch.tensor([ep_values[-1] / step_gamma], device=ep_values.device)]
+            )
+            next_ep_values[:-1] *= (1 - ep_dones[:-1] * 1.0)
+            nextvalues[ep_indices] = next_ep_values * step_gamma
+
+            ep_gaelam = turn_advantages[ep_indices].clone()
+            next_ep_gaelam = torch.cat([ep_gaelam[1:], torch.zeros_like(ep_gaelam[:1])])
+            next_ep_gaelam[:-1] *= (1 - ep_dones[:-1] * 1.0)
+            lastgaelam[ep_indices] = next_ep_gaelam * step_gamma * step_lam
+
+        # ---- token level ----
+        advantages_reversed = []
+        gen_len = token_level_rewards.shape[-1]
+
+        for t in reversed(range(gen_len)):
+            # only the token_gamma == token_lam == 1.0 special case is implemented:
+            # every token in a turn gets (reward-to-go within turn) + next-turn bootstrap
+            # value - V(token) + next-turn GAE.
+            assert token_gamma == 1.0 and token_lam == 1.0, (
+                "Currently only support token_gamma=1.0 and token_lam=1.0"
+            )
+            token_adv = token_level_rewards[:, t:].sum(-1) + nextvalues - values[:, t] + lastgaelam
+            advantages_reversed.append(token_adv)
+        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+
+        returns = advantages + values
+        advantages = verl_F.masked_whiten(advantages, response_mask)
+    return advantages, returns
+
+
 # NOTE(sgm): this implementation only consider outcome supervision, where the reward is a scalar.
 @register_adv_est(AdvantageEstimator.GRPO)  # or simply: @register_adv_est("grpo")
 def compute_grpo_outcome_advantage(

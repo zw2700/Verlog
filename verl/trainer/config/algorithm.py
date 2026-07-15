@@ -650,6 +650,15 @@ class AlgoConfig(BaseConfig):
 
     gamma: float = 1.0
     lam: float = 1.0
+    # Verlog dual-discounting GAE (adv_estimator="gae_dual"): a turn-level discount
+    # (step_gamma/step_lam) applied across turns within each (env, agent) episode chain,
+    # on top of the token-level discount (token_gamma/token_lam) within a turn. Neutral
+    # (1.0) defaults reduce to single-level GAE; recommended run values are
+    # step_gamma ~ 0.99-0.995, step_lam ~ 0.95 (only token_*==1.0 is implemented).
+    token_gamma: float = 1.0
+    step_gamma: float = 1.0
+    token_lam: float = 1.0
+    step_lam: float = 1.0
     adv_estimator: str = "gae"
     norm_adv_by_std_in_grpo: bool = True
     use_kl_in_reward: bool = False
