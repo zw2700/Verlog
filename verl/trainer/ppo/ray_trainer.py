@@ -1608,8 +1608,13 @@ class RayPPOTrainer:
                     # repeat to align with repeated responses in rollout
                     if env_mode:
                         # the env-driven rollout output IS the training batch (variable turns×agents);
-                        # there is no dataset-prompt alignment to repeat/union.
+                        # there is no dataset-prompt alignment to repeat/union. Carry over the meta_info
+                        # the trainer set on the dataloader batch (temperature, uid, ...) which the
+                        # stock .union() would have preserved and downstream workers rely on.
+                        _orig_meta = dict(batch.meta_info)
                         batch = gen_batch_output
+                        for _k, _v in _orig_meta.items():
+                            batch.meta_info.setdefault(_k, _v)
                     else:
                         batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                         batch = batch.union(gen_batch_output)
