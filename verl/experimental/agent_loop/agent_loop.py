@@ -83,6 +83,7 @@ class AgentLoopMetrics(BaseModel):
     tool_calls: float = 0.0
     compute_score: float = 0.0
     num_preempted: int = -1  # -1 means not available
+    env_metrics: dict[str, Any] = {}  # Verlog: per-episode env metrics (hiring_env)
 
 
 class AgentLoopOutput(BaseModel):
@@ -110,6 +111,17 @@ class AgentLoopOutput(BaseModel):
     """Extra fields for dynamic addition."""
     mm_processor_kwargs: Optional[dict[str, Any]] = None
     """Processor/backend kwargs that must stay aligned across rollout and training paths."""
+    # --- Verlog multi-agent RL fields (one AgentLoopOutput per turn) ---
+    rewards: float = 0.0
+    """Cumulative per-turn reward for RL / dual-discount GAE."""
+    done: bool = False
+    """Whether this row closes its (env, agent) GAE chain (episode boundary)."""
+    env_idx: int = 0
+    """Index of the environment that produced this row."""
+    agent_id: Optional[str] = None
+    """Acting agent id (e.g. prof_1) for multi-agent credit assignment."""
+    turn_id: int = 0
+    """Turn index within the episode chain."""
 
     def as_dict(self) -> dict[str, Any]:
         """Convert agent loop output to a dictionary."""
@@ -174,6 +186,50 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
     """Multi-modal inputs for processors (e.g. pixel_values, image_grid_thw, video_grid_thw)."""
     extra_fields: dict[str, Any] = {}
     """Extra fields for dynamic addition."""
+    # --- Verlog multi-agent RL fields (mirror AgentLoopOutput) ---
+    rewards: float = 0.0
+    done: bool = False
+    env_idx: int = 0
+    agent_id: Optional[str] = None
+    turn_id: int = 0
+
+
+@ray.remote
+class Counter:
+    """Shared global real-turn budget for env-driven multi-agent rollout (Verlog).
+
+    One instance per AgentLoopManager, shared by all AgentLoopWorkers. Enforces a
+    global cap of `batch_size` (= gen_batch_size) accepted real turns across all
+    async loops, so variable-length multi-turn episodes don't overrun the trainer
+    batch. Reserve a slot BEFORE generating so concurrent workers can't each pass a
+    pre-generation fullness check and append extra rows.
+    """
+
+    def __init__(self):
+        self.num_turns = 0
+        self.batch_size = 0
+        self.lock = asyncio.Lock()
+
+    async def increment(self, n=1):
+        """Reserve n real-turn slots. Returns (turn_accepted, reserved_turn_fills_counter)."""
+        async with self.lock:
+            if self.num_turns + n > self.batch_size:
+                return False, True  # budget full — reject; caller must break
+            self.num_turns += n
+            return True, self.num_turns >= self.batch_size  # accepted; 2nd = this turn filled it
+
+    async def reset(self, batch_size):
+        async with self.lock:
+            self.batch_size = batch_size
+            self.num_turns = 0
+
+    async def get_batch_size(self):
+        async with self.lock:
+            return self.batch_size
+
+    async def is_full(self):
+        async with self.lock:
+            return self.num_turns >= self.batch_size
 
 
 class DictConfigWrap:
