@@ -95,7 +95,9 @@ class ConsensusAgentLoop(AgentLoopBase):
         # Start from the shortest candidate and progressively add older turns.
         # This avoids tokenizing the full history first, which can emit long-sequence warnings.
         if has_system:
-            start_indices = range(len(tail_messages), -1, -1)
+            # Start at len-1 (system + newest turn), NOT len: a system-only candidate has no
+            # user turn and Qwen3.5's chat template raises "No user query found in messages".
+            start_indices = range(len(tail_messages) - 1, -1, -1)
         else:
             # Without a system prompt, keep at least the latest message.
             if not tail_messages:
