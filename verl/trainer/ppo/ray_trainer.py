@@ -182,6 +182,79 @@ def compute_spec_decode_metrics(
     }
 
 
+# ---------------------------------------------------------------------------
+# Verlog multi-agent episode-structure helpers (ported from the verl-0.6 fork).
+# Used by the dual-discount GAE (adv_estimator="gae_dual") to group rows into
+# per-(env, agent) turn chains and to strip the value-carrier bootstrap turn.
+# ---------------------------------------------------------------------------
+def get_episode_structure(episode_idx: np.ndarray):
+    """Group row indices by contiguous episode id.
+
+    >>> get_episode_structure(np.array([0,0,0,1,1,2]))
+    [[0, 1, 2], [3, 4], [5]]
+    """
+    episodes = []
+    for ep in np.unique(episode_idx):
+        episodes.append(np.where(episode_idx == ep)[0].tolist())
+    return episodes
+
+
+def get_multiagent_episode_structure(episode_idx: np.ndarray, agent_id: np.ndarray, turn_id: np.ndarray):
+    """Group row indices by (episode_idx, agent_id), ordered within a group by turn_id then index.
+
+    Each group is one agent's turn-chain within one env — its own GAE credit chain.
+    """
+    episodes = []
+    groups = defaultdict(list)
+    for i, (env_i, agent_i) in enumerate(zip(episode_idx, agent_id)):
+        env_key = int(env_i) if isinstance(env_i, np.generic) else env_i
+        groups[(env_key, agent_i)].append(i)
+    for indices in groups.values():
+        idx_arr = np.array(indices, dtype=np.int32)
+        order = np.lexsort((idx_arr, turn_id[idx_arr]))
+        episodes.append(idx_arr[order].tolist())
+    return episodes
+
+
+def _has_agent_id(non_tensor_batch: dict) -> bool:
+    agent_id = non_tensor_batch.get("agent_id")
+    if agent_id is None:
+        return False
+    return any(a is not None for a in agent_id)
+
+
+def remove_last_turn_in_episode(batch: DataProto) -> DataProto:
+    """Drop the last (bootstrap) row of each contiguous env_idx episode."""
+    episode_idx = batch.non_tensor_batch["env_idx"]
+    last_indices = []
+    for i in range(len(episode_idx) - 1):
+        if episode_idx[i] != episode_idx[i + 1]:
+            last_indices.append(i)
+    last_indices.append(len(episode_idx) - 1)
+    keep = [i for i in range(len(episode_idx)) if i not in set(last_indices)]
+    return batch.select_idxs(keep)
+
+
+def remove_last_turn_in_episode_multiagent(batch: DataProto) -> DataProto:
+    """Drop the max-turn_id (bootstrap) row of each (env_idx, agent_id) chain."""
+    env_idx = batch.non_tensor_batch["env_idx"]
+    agent_id = batch.non_tensor_batch["agent_id"]
+    turn_id = batch.non_tensor_batch["turn_id"]
+
+    groups = defaultdict(list)
+    for i, (env_i, agent_i) in enumerate(zip(env_idx, agent_id)):
+        env_key = int(env_i) if isinstance(env_i, np.generic) else env_i
+        groups[(env_key, agent_i)].append(i)
+    last_indices = []
+    for indices in groups.values():
+        idx_arr = np.array(indices, dtype=np.int32)
+        max_turn = turn_id[idx_arr].max()
+        max_indices = idx_arr[turn_id[idx_arr] == max_turn]
+        last_indices.append(int(max_indices[-1]))
+    keep = [i for i in range(len(env_idx)) if i not in set(last_indices)]
+    return batch.select_idxs(keep)
+
+
 def compute_advantage(
     data: DataProto,
     adv_estimator: AdvantageEstimator,
@@ -230,6 +303,32 @@ def compute_advantage(
                 config.pf_ppo.get("reweight_method"),
                 config.pf_ppo.get("weight_pow"),
             )
+    elif adv_estimator == "gae_dual":
+        # Verlog dual-discount GAE for multi-turn / multi-agent episodes. Groups rows into
+        # per-(env, agent) turn chains (episode_structure) and applies a turn-level discount
+        # (step_gamma/step_lam, read off the AlgoConfig) on top of the token-level GAE.
+        episode_idx = data.non_tensor_batch["env_idx"]
+        if _has_agent_id(data.non_tensor_batch) and "turn_id" in data.non_tensor_batch:
+            episode_structure = get_multiagent_episode_structure(
+                episode_idx,
+                data.non_tensor_batch["agent_id"],
+                data.non_tensor_batch["turn_id"],
+            )
+        else:
+            episode_structure = get_episode_structure(episode_idx)
+        advantages, returns = core_algos.compute_gae_advantage_return_dual(
+            token_level_rewards=data.batch["token_level_rewards"],
+            values=data.batch["values"],
+            response_mask=data.batch["response_mask"],
+            dones=data.batch["done"],
+            token_gamma=getattr(config, "token_gamma", 1.0),
+            step_gamma=getattr(config, "step_gamma", 1.0),
+            token_lam=getattr(config, "token_lam", 1.0),
+            step_lam=getattr(config, "step_lam", 1.0),
+            episode_structure=episode_structure,
+        )
+        data.batch["advantages"] = advantages
+        data.batch["returns"] = returns
     elif adv_estimator == AdvantageEstimator.GRPO:
         # Initialize the mask for GRPO calculation
         grpo_calculation_mask = data.batch["response_mask"]
