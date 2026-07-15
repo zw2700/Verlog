@@ -48,6 +48,11 @@ $PY -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.calculate_log_probs=True \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.3 \
   actor_rollout_ref.rollout.enforce_eager=False \
+  actor_rollout_ref.rollout.prompt_length=4096 \
+  actor_rollout_ref.rollout.response_length=512 \
+  actor_rollout_ref.rollout.max_model_len=8192 \
+  data.max_prompt_length=4096 \
+  data.max_response_length=512 \
   actor_rollout_ref.rollout.agent.default_agent_loop=consensus_multi_agent \
   actor_rollout_ref.rollout.agent.num_workers=$NUM_ENVS \
   actor_rollout_ref.actor.use_kl_loss=True \

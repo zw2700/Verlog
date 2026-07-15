@@ -159,7 +159,12 @@ class ConsensusAgentLoop(AgentLoopBase):
             return best_ids
 
         # If even minimal context is too long, truncate token IDs as a final fallback.
-        minimal_messages = prefix_messages if has_system else [tail_messages[-1]]
+        # Always include the newest user turn: a system-only message list makes Qwen3.5's
+        # chat template raise "No user query found in messages".
+        if tail_messages:
+            minimal_messages = prefix_messages + [tail_messages[-1]]
+        else:
+            minimal_messages = prefix_messages
         minimal_ids = _tokenize(minimal_messages)
         logger.warning(
             "Minimal prompt still exceeds prompt_length (%d > %d); truncating token IDs as fallback.",
