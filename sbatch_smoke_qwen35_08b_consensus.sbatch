@@ -65,6 +65,7 @@ $PY -m verl.trainer.main_ppo \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   critic.model.path="$MODEL" \
+  critic.enable=True \
   critic.model.use_remove_padding=False \
   critic.use_dynamic_bsz=False \
   critic.ppo_micro_batch_size_per_gpu=1 \
