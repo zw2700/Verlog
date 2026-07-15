@@ -1543,8 +1543,19 @@ class RayPPOTrainer:
 
                 # pass global_steps to trace
                 gen_batch.meta_info["global_steps"] = self.global_steps
+                env_mode = getattr(self.config, "envs", None) is not None and bool(
+                    self.config.envs.get("env_name", None)
+                )
                 rollout_n = self.config.actor_rollout_ref.rollout.n
-                gen_batch_output = gen_batch.repeat(repeat_times=rollout_n, interleave=True)
+                if env_mode:
+                    # env-driven multi-agent rollout: the env generates all turns; pass the turn
+                    # budget + env count to the manager, and do NOT repeat per prompt (n must be 1).
+                    assert rollout_n == 1, "env mode requires rollout.n == 1"
+                    gen_batch.meta_info["num_envs"] = self.config.actor_rollout_ref.rollout.agent.num_workers
+                    gen_batch.meta_info["gen_batch_size"] = self.config.data.train_batch_size
+                    gen_batch_output = gen_batch
+                else:
+                    gen_batch_output = gen_batch.repeat(repeat_times=rollout_n, interleave=True)
 
                 if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                     # NOTE: REMAX needs one sampled rollout plus one greedy baseline per prompt.
@@ -1574,7 +1585,9 @@ class RayPPOTrainer:
                         timing_raw.update(combined_gen_output.meta_info["timing"])
                         combined_gen_output.meta_info.pop("timing", None)
 
-                    gen_batch_output = combined_gen_output.slice(0, num_sampled_prompts)
+                    gen_batch_output = (
+                        combined_gen_output if env_mode else combined_gen_output.slice(0, num_sampled_prompts)
+                    )
                     if "__do_sample__" in gen_batch_output.non_tensor_batch:
                         gen_batch_output.pop(non_tensor_batch_keys=["__do_sample__"])
 
@@ -1593,8 +1606,13 @@ class RayPPOTrainer:
                         del gen_baseline_output
                     del combined_gen_batch, combined_gen_output
                     # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    batch = batch.union(gen_batch_output)
+                    if env_mode:
+                        # the env-driven rollout output IS the training batch (variable turns×agents);
+                        # there is no dataset-prompt alignment to repeat/union.
+                        batch = gen_batch_output
+                    else:
+                        batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                        batch = batch.union(gen_batch_output)
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
@@ -1607,21 +1625,32 @@ class RayPPOTrainer:
 
                     # compute global_valid tokens
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
-                    # get images_seqlens
-                    images_seqlens_all = []
-                    for multi_modal_input in batch.non_tensor_batch["multi_modal_inputs"]:
-                        if "image_grid_thw" not in multi_modal_input.keys():
-                            continue
-                        images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
-                    batch.meta_info["images_seqlens"] = images_seqlens_all
+                    # get images_seqlens (only for multimodal batches; env/text-only batches skip)
+                    if "multi_modal_inputs" in batch.non_tensor_batch:
+                        images_seqlens_all = []
+                        for multi_modal_input in batch.non_tensor_batch["multi_modal_inputs"]:
+                            if "image_grid_thw" not in multi_modal_input.keys():
+                                continue
+                            images_seqlens_all.extend(multi_modal_input["images_seqlens"].tolist())
+                        batch.meta_info["images_seqlens"] = images_seqlens_all
                     with marked_timer("reward", timing_raw, color="yellow"):
-                        # compute reward model score
-                        if self.use_rm and "rm_scores" not in batch.batch.keys():
-                            batch_reward = self._compute_reward_colocate(batch)
-                            batch = batch.union(batch_reward)
+                        if env_mode:
+                            # env-driven reward: scatter each turn's scalar env reward (batch["rewards"])
+                            # onto its last real response token. No reward model.
+                            _seq_len = batch.batch["response_mask"].sum(-1).long() - 1
+                            reward_tensor = torch.zeros_like(batch.batch["response_mask"], dtype=torch.float32)
+                            reward_tensor[torch.arange(reward_tensor.size(0)), _seq_len] = (
+                                batch.batch["rewards"].float()
+                            )
+                            reward_extra_infos_dict = {}
+                        else:
+                            # compute reward model score
+                            if self.use_rm and "rm_scores" not in batch.batch.keys():
+                                batch_reward = self._compute_reward_colocate(batch)
+                                batch = batch.union(batch_reward)
 
-                        # extract reward_tensor and reward_extra_infos_dict for training
-                        reward_tensor, reward_extra_infos_dict = extract_reward(batch)
+                            # extract reward_tensor and reward_extra_infos_dict for training
+                            reward_tensor, reward_extra_infos_dict = extract_reward(batch)
 
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
@@ -1730,6 +1759,12 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+
+                    # env mode: advantages were computed on the full batch (incl. the value-carrier
+                    # bootstrap turn of each (env,agent) chain, which GAE forces to advantage 0);
+                    # strip those rows so they contribute no gradient to the critic/actor update.
+                    if env_mode and _has_agent_id(batch.non_tensor_batch) and "turn_id" in batch.non_tensor_batch:
+                        batch = remove_last_turn_in_episode_multiagent(batch)
 
                     # update critic
                     if self.use_critic:
