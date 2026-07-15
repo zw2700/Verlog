@@ -74,13 +74,21 @@ class ConsensusAgentLoop(AgentLoopBase):
         tokenize_kwargs.pop("max_length", None)
 
         def _tokenize(msgs: list[dict[str, Any]]) -> list[int]:
-            return self.tokenizer.apply_chat_template(
+            enc = self.tokenizer.apply_chat_template(
                 msgs,
                 tools=self.tool_schemas,
                 add_generation_prompt=True,
                 tokenize=True,
                 **tokenize_kwargs,
             )
+            # transformers 5.x apply_chat_template returns a BatchEncoding dict
+            # ({"input_ids": [...], "attention_mask": [...]}); older returned list[int].
+            if isinstance(enc, dict) or hasattr(enc, "input_ids"):
+                enc = enc["input_ids"]
+            # unwrap a possible batch dimension ([[...]] -> [...])
+            if enc and isinstance(enc[0], list):
+                enc = enc[0]
+            return list(enc)
 
         if not messages:
             return _tokenize(messages)
