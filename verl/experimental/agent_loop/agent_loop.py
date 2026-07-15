@@ -76,6 +76,35 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 DEFAULT_ROUTING_CACHE_SIZE = 10000
 
 
+def aggregate_env_metrics(all_env_metrics: list[dict[str, Any]]) -> dict[str, float]:
+    """Average per-episode hiring_env metrics (present on done rows) under env/* keys.
+
+    Iterates the UNION of keys (some metrics — consensus_quality/*, schelling/* — appear only
+    on consensus episodes) and filters to numeric values (drops None sentinels). Adds a few
+    per-rollout-step counters used to track social-optimality.
+    """
+    all_env_metrics = [m for m in all_env_metrics if m]
+    if not all_env_metrics:
+        return {}
+    stats = {}
+    all_keys = set()
+    for m in all_env_metrics:
+        all_keys.update(m.keys())
+    for key in sorted(all_keys):
+        values = [m[key] for m in all_env_metrics if key in m and isinstance(m[key], (int, float))]
+        if values:
+            stats[f"env/{key}"] = float(np.mean(values))
+    n = len(all_env_metrics)
+    n_consensus = sum(1 for m in all_env_metrics if m.get("negotiation/consensus_reached") == 1)
+    n_socopt = sum(1 for m in all_env_metrics if m.get("outcome/chosen_student_rank_global") == 1)
+    stats["env/step/episodes_rolled_out"] = float(n)
+    stats["env/step/episodes_consensus"] = float(n_consensus)
+    stats["env/step/episodes_socially_optimal"] = float(n_socopt)
+    stats["env/step/socially_optimal_given_consensus_rate"] = (n_socopt / n_consensus) if n_consensus else 0.0
+    stats["env/step/socially_optimal_rate"] = (n_socopt / n) if n else 0.0
+    return stats
+
+
 class AgentLoopMetrics(BaseModel):
     """Agent loop performance metrics."""
 
@@ -517,6 +546,18 @@ class AgentLoopWorker:
             trace_config.get("max_samples_per_step_per_worker", None),
         )
 
+        # Verlog: env-driven multi-agent rollout — one environment per worker.
+        # Gated on an `envs` config block; stays None for the stock dataset-driven path.
+        self.env = None
+        self.val_env = None
+        envs_cfg = self.config.get("envs", None)
+        if envs_cfg is not None and envs_cfg.get("env_name", None):
+            from verl.envs.environments import make_env
+
+            task = envs_cfg.get("task", None)
+            self.env = make_env(envs_cfg.env_name, task, self.config, tokenizer=self.tokenizer)
+            self.val_env = make_env(envs_cfg.env_name, task, self.config, tokenizer=self.tokenizer)
+
     def _get_mm_processor_kwargs(self, audio_data: Optional[list[Any]] = None) -> dict[str, Any]:
         """Return multimodal processor kwargs with audio sampling-rate defaults."""
         mm_processor_kwargs = dict(self.mm_processor_kwargs or {})
@@ -526,11 +567,13 @@ class AgentLoopWorker:
                 mm_processor_kwargs["sampling_rate"] = int(sampling_rate)
         return mm_processor_kwargs
 
-    async def generate_sequences(self, batch: DataProto) -> DataProto:
+    async def generate_sequences(self, batch: DataProto, counter=None, env_idx: int = 0) -> DataProto:
         """Generate sequences from agent loop.
 
         Args:
             batch (DataProto): Input batch.
+            counter: shared Verlog turn-budget Counter actor (env-driven multi-agent mode).
+            env_idx (int): this worker's environment index (env-driven mode).
 
         Returns:
             DataProto: Output batch.
@@ -547,6 +590,11 @@ class AgentLoopWorker:
             responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
+        # Verlog env-driven multi-agent rollout: this worker owns one env and runs the
+        # consensus loop, which returns a variable-length list of per-turn outputs.
+        if self.env is not None and counter is not None:
+            return await self._run_env_rollout(batch, counter, env_idx)
+
         config = self.rollout_config
         validate = batch.meta_info.get("validate", False)
         sampling_params = dict(
@@ -677,6 +725,139 @@ class AgentLoopWorker:
             if return_attention_mask:
                 padded["attention_mask"] = padded["attention_mask"].unsqueeze(0)
         return padded
+
+    async def _run_env_rollout(self, batch: DataProto, counter, env_idx: int) -> DataProto:
+        """Verlog env-driven multi-agent rollout (one env per worker).
+
+        Instantiates the configured agent loop, runs it against this worker's env with the
+        shared turn-budget counter, and collects the variable-length list of per-turn outputs.
+        """
+        config = self.rollout_config
+        validate = batch.meta_info.get("validate", False)
+        env = self.val_env if validate else self.env
+        sampling_params = dict(
+            temperature=config.temperature,
+            top_p=config.top_p,
+            top_k=config.top_k,
+            repetition_penalty=1.0,
+            logprobs=config.calculate_log_probs,
+        )
+        if validate:
+            sampling_params["top_p"] = config.val_kwargs.top_p
+            sampling_params["top_k"] = config.val_kwargs.top_k
+            sampling_params["temperature"] = config.val_kwargs.temperature
+
+        agent_name = config.agent.default_agent_loop
+        assert agent_name in _agent_loop_registry, (
+            f"Agent loop {agent_name} not registered: {list(_agent_loop_registry.keys())}"
+        )
+        agent_loop = hydra.utils.instantiate(
+            config=_agent_loop_registry[agent_name],
+            trainer_config=DictConfigWrap(config=self.config),
+            server_manager=self.llm_client,
+            tokenizer=self.tokenizer,
+            processor=self.processor,
+            dataset_cls=self.dataset_cls,
+            data_config=DictConfigWrap(self.config.data),
+            tools=ToolListWrap(self.tools),
+        )
+        kwargs = {}
+        if "agent_id" in batch.non_tensor_batch and len(batch) > 0:
+            kwargs["agent_id"] = batch.non_tensor_batch["agent_id"][0]
+        outputs = await agent_loop.run(
+            env,
+            counter,
+            env_idx,
+            sampling_params,
+            validate,
+            global_steps=batch.meta_info.get("global_steps", -1),
+            **kwargs,
+        )
+        assert outputs, (
+            f"env-driven rollout produced no turns for env_idx={env_idx}; "
+            f"ensure gen_batch_size >= num_envs so every worker reserves at least one turn."
+        )
+        internal = [self._pad_multiagent_output(o) for o in outputs]
+        return self._postprocess_multiagent(internal)
+
+    def _pad_multiagent_output(self, output: AgentLoopOutput) -> _InternalAgentLoopOutput:
+        """Pad one env-turn output to fixed length, carrying the RL fields (no reward/teacher recompute)."""
+        prompt_output = self._pad_token_ids(
+            output.prompt_ids, max_length=self.rollout_config.prompt_length,
+            padding_side="left", return_attention_mask=True,
+        )
+        response_output = self._pad_token_ids(
+            output.response_ids, max_length=self.rollout_config.response_length,
+            padding_side="right", return_attention_mask=True,
+        )
+        response_mask_output = self._pad_token_ids(
+            output.response_mask, max_length=self.rollout_config.response_length,
+            padding_side="right", return_attention_mask=False,
+        )
+        response_logprobs = None
+        if output.response_logprobs is not None:
+            pad_size = self.rollout_config.response_length - len(output.response_logprobs)
+            response_logprobs = torch.tensor(output.response_logprobs + [0.0] * pad_size).unsqueeze(0)
+        response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
+        attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
+        input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
+        position_ids = self._compute_position_ids(input_ids, attention_mask, {}, self._get_mm_processor_kwargs(None))
+        return _InternalAgentLoopOutput(
+            prompt_ids=prompt_output["input_ids"],
+            response_ids=response_output["input_ids"],
+            input_ids=input_ids,
+            position_ids=position_ids,
+            response_mask=response_mask,
+            attention_mask=attention_mask,
+            response_logprobs=response_logprobs,
+            multi_modal_inputs=None,
+            multi_modal_data=None,
+            reward_score=output.reward_score,
+            num_turns=output.num_turns,
+            metrics=output.metrics,
+            extra_fields=output.extra_fields,
+            rewards=output.rewards,
+            done=output.done,
+            env_idx=output.env_idx,
+            agent_id=output.agent_id,
+            turn_id=output.turn_id,
+        )
+
+    def _postprocess_multiagent(self, inputs: list[_InternalAgentLoopOutput]) -> DataProto:
+        """Combine env-turn outputs into a DataProto with rewards/done tensors + env/turn/agent ids."""
+        prompt_ids = torch.cat([i.prompt_ids for i in inputs], dim=0)
+        response_ids = torch.cat([i.response_ids for i in inputs], dim=0)
+        response_mask = torch.cat([i.response_mask for i in inputs], dim=0)
+        attention_mask = torch.cat([i.attention_mask for i in inputs], dim=0)
+        input_ids = torch.cat([i.input_ids for i in inputs], dim=0)
+        position_ids = torch.cat([i.position_ids for i in inputs], dim=0)
+        rewards = torch.tensor([i.rewards for i in inputs], dtype=torch.float32)
+        done = torch.tensor([i.done for i in inputs], dtype=torch.bool)
+        optional_outputs = {}
+        if inputs[0].response_logprobs is not None:
+            optional_outputs["rollout_log_probs"] = torch.cat([i.response_logprobs for i in inputs], dim=0)
+        batch = TensorDict(
+            {
+                "prompts": prompt_ids,
+                "responses": response_ids,
+                "response_mask": response_mask,
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+                "rewards": rewards,
+                "done": done,
+                **optional_outputs,
+            },
+            batch_size=len(inputs),
+        )
+        non_tensor_batch = {
+            "__num_turns__": np.array([i.num_turns for i in inputs], dtype=np.int32),
+            "env_idx": np.array([i.env_idx for i in inputs], dtype=np.int32),
+            "turn_id": np.array([i.turn_id for i in inputs], dtype=np.int32),
+            "agent_id": np.array([i.agent_id for i in inputs], dtype=object),
+        }
+        metrics = [i.metrics.model_dump() for i in inputs]
+        return DataProto(batch=batch, non_tensor_batch=non_tensor_batch, meta_info={"metrics": metrics})
 
     async def _agent_loop_postprocess(self, output, validate, **kwargs) -> _InternalAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
@@ -1124,6 +1305,12 @@ class AgentLoopManager:
         if not hasattr(self, "agent_loop_workers_class"):
             self.agent_loop_workers_class = ray.remote(AgentLoopWorker)
 
+        # Verlog: shared turn-budget counter for env-driven multi-agent rollout.
+        self.env_mode = getattr(self.config, "envs", None) is not None and bool(
+            self.config.envs.get("env_name", None)
+        )
+        self.counter = Counter.remote() if self.env_mode else None
+
     @classmethod
     @auto_await
     async def create(cls, *args, **kwargs):
@@ -1164,13 +1351,34 @@ class AgentLoopManager:
         Returns:
             DataProto: Output batch.
         """
-        chunkes = prompts.chunk(len(self.agent_loop_workers))
-        outputs = await asyncio.gather(
-            *[
-                worker.generate_sequences.remote(chunk)
-                for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
-            ]
-        )
+        if self.env_mode:
+            # Verlog env-driven multi-agent rollout: one worker == one env; a shared
+            # Counter caps total real turns. Reset it, slice to num_envs, dispatch with env_idx.
+            gen_batch_size = prompts.meta_info.get("gen_batch_size", len(prompts))
+            await self.counter.reset.remote(gen_batch_size)
+            num_envs = prompts.meta_info.get("num_envs", len(self.agent_loop_workers))
+            assert num_envs == len(self.agent_loop_workers), (
+                f"num_envs {num_envs} must equal the number of agent loop workers "
+                f"{len(self.agent_loop_workers)} (set rollout.agent.num_workers = num_envs)."
+            )
+            prompts = prompts.select_idxs(list(range(num_envs)))
+            chunkes = prompts.chunk(len(self.agent_loop_workers))
+            outputs = await asyncio.gather(
+                *[
+                    worker.generate_sequences.remote(chunk, self.counter, env_idx)
+                    for env_idx, (worker, chunk) in enumerate(
+                        zip(self.agent_loop_workers, chunkes, strict=True)
+                    )
+                ]
+            )
+        else:
+            chunkes = prompts.chunk(len(self.agent_loop_workers))
+            outputs = await asyncio.gather(
+                *[
+                    worker.generate_sequences.remote(chunk)
+                    for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
+                ]
+            )
         output = DataProto.concat(outputs)
 
         # calculate performance metrics
@@ -1211,5 +1419,11 @@ class AgentLoopManager:
             attention_mask = output.batch["attention_mask"][slowest]
             timing["agent_loop/slowest/prompt_length"] = attention_mask[:prompt_length].sum().item()
             timing["agent_loop/slowest/response_length"] = attention_mask[prompt_length:].sum().item()
+
+        # Verlog: aggregate per-episode env metrics (only present on done rows).
+        all_env_metrics = [m.get("env_metrics", {}) for chunk in metrics for m in chunk]
+        all_env_metrics = [em for em in all_env_metrics if em]
+        if all_env_metrics:
+            timing.update(aggregate_env_metrics(all_env_metrics))
 
         return timing
