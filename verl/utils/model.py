@@ -683,7 +683,19 @@ _architecture_to_auto_class = {
 }
 
 
+# Qwen3.5 (model_type "qwen3_5") ships as a vision-language model
+# (arch "Qwen3_5ForConditionalGeneration", with text_config + vision_config), but for the
+# text-only RL task we train the causal *text* LM. transformers maps qwen3_5 -> Qwen3_5ForCausalLM
+# under AutoModelForCausalLM, yet the generic routing below would (a) match the ImageTextToText
+# VLM path or (b) fall through the arch-suffix map ("ForConditionalGeneration" is not a key) to
+# bare AutoModel (no LM head). Force CausalLM for these text-hybrid model types.
+_FORCE_CAUSAL_LM_MODEL_TYPES = {"qwen3_5", "qwen3_5_text"}
+
+
 def get_hf_auto_model_class(hf_config):
+    if getattr(hf_config, "model_type", None) in _FORCE_CAUSAL_LM_MODEL_TYPES:
+        return AutoModelForCausalLM
+
     has_remote_code = hasattr(hf_config, "auto_map") and any(
         hf_config.architectures[0] in val for val in hf_config.auto_map.values()
     )
