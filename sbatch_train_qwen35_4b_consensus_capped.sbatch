@@ -25,6 +25,8 @@ export TRITON_CACHE_DIR=/zfsauton/scratch/cpulling/.triton_cache
 export PYTHONPATH=$PWD
 export RAY_TMPDIR=/tmp/r${SLURM_JOB_ID}
 export WANDB_API_KEY=$(cat ~/.wandb_key 2>/dev/null)
+export WANDB_START_METHOD=thread
+export WANDB_ENTITY=aseo-carnegie-mellon-university
 export CONSENSUS_GEN_LOG=/zfsauton/scratch/cpulling/verlog_v08_data/logs/genlog_4b_capped_${SLURM_JOB_ID}.jsonl
 
 MODEL="Qwen/Qwen3.5-4B"
@@ -92,5 +94,5 @@ $PY -m verl.trainer.main_ppo \
   trainer.nnodes=1 \
   trainer.project_name=verlog_qwen35_v08 \
   trainer.experiment_name=consensus_4b_capped_${SLURM_JOB_ID} \
-  trainer.logger=[console]
+  trainer.logger=[console,wandb]
 echo "=== VAL EXIT=$? ==="
