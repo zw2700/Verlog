@@ -325,6 +325,7 @@ def compute_advantage(
             step_gamma=getattr(config, "step_gamma", 1.0),
             token_lam=getattr(config, "token_lam", 1.0),
             step_lam=getattr(config, "step_lam", 1.0),
+            step_lam_critic=getattr(config, "step_lam_critic", None),
             episode_structure=episode_structure,
         )
         data.batch["advantages"] = advantages

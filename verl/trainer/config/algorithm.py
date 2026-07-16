@@ -659,6 +659,10 @@ class AlgoConfig(BaseConfig):
     step_gamma: float = 1.0
     token_lam: float = 1.0
     step_lam: float = 1.0
+    # VC-PPO decoupled-GAE: a separate step-lambda for the CRITIC return target. None = coupled
+    # (critic uses step_lam, the current/biased behaviour). Set to 1.0 for the unbiased
+    # Monte-Carlo-across-turns return (VC-PPO's lambda_value=1.0) while the actor keeps step_lam.
+    step_lam_critic: Optional[float] = None
     adv_estimator: str = "gae"
     norm_adv_by_std_in_grpo: bool = True
     use_kl_in_reward: bool = False

@@ -75,6 +75,10 @@ algorithm:
   token_lam: 1.0
   step_lam: 1.0
 
+  # VC-PPO decoupled-GAE: separate step-lambda for the critic return target.
+  # null = coupled (critic uses step_lam); set 1.0 for unbiased across-turn returns.
+  step_lam_critic: null
+
   # Advantage estimator type: "gae", "grpo", "reinforce_plus_plus", "gae_dual" (multi-agent), etc.
   adv_estimator: gae
 

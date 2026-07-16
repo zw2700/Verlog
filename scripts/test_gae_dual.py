@@ -49,7 +49,40 @@ def test_gae_dual(env_idx, agent_id, turn_id):
     print(f"[ok] gae_dual: adv{tuple(adv.shape)} finite, mean={adv.mean().item():.2e}")
 
 
+def test_decoupled_critic_lambda():
+    """VC-PPO decoupled-GAE: step_lam_critic changes the critic RETURN target, not the advantage.
+
+    Uses a single length-4 (env, agent) chain (3 real turns + 1 bootstrap) so step_lam actually
+    bites — with only 1 real turn the future-GAE term vanishes and step_lam has no effect.
+    """
+    struct = [[0, 1, 2, 3]]  # one chain: turns 0,1,2 real, turn 3 = value-carrier bootstrap
+    B, L = 4, 4
+    rewards = torch.zeros(B, L)
+    rewards[:, -1] = torch.tensor([1.0, 0.5, 2.0, 0.0])  # per-turn scalar reward on last token
+    values = torch.randn(B, L, generator=torch.Generator().manual_seed(1))
+    mask = torch.ones(B, L)
+    dones = torch.tensor([0.0, 0.0, 0.0, 0.0])
+    core = core_algos.compute_gae_advantage_return_dual_core
+    kw = dict(token_level_rewards=rewards, values=values, response_mask=mask, dones=dones,
+              episode_structure=struct, step_gamma=0.99)
+
+    adv_c, ret_c = core(step_lam=0.95, step_lam_critic=None, **kw)       # coupled (current)
+    adv_d, ret_d = core(step_lam=0.95, step_lam_critic=1.0, **kw)        # VC-PPO decoupled
+    adv_e, ret_e = core(step_lam=0.95, step_lam_critic=0.95, **kw)       # explicit == step_lam
+
+    # advantage (actor) must be identical regardless of critic lambda
+    assert torch.allclose(adv_c, adv_d, atol=1e-5), "critic-lambda must NOT change the actor advantage"
+    # step_lam_critic == step_lam recovers coupled returns
+    assert torch.allclose(ret_c, ret_e, atol=1e-5), "step_lam_critic==step_lam must equal coupled"
+    # decoupled (lam=1) returns should actually differ from coupled (lam=0.95)
+    assert not torch.allclose(ret_c, ret_d, atol=1e-4), "step_lam_critic=1.0 should change the return target"
+    assert torch.isfinite(ret_d).all()
+    print(f"[ok] decoupled critic lambda: adv unchanged, returns differ "
+          f"(coupled mean={ret_c.mean():.3f} vs decoupled mean={ret_d.mean():.3f})")
+
+
 if __name__ == "__main__":
     e, a, t = test_helpers()
     test_gae_dual(e, a, t)
+    test_decoupled_critic_lambda()
     print("ALL_OK")

@@ -273,6 +273,7 @@ def compute_gae_advantage_return_dual(
     step_gamma: float = 1.0,
     token_lam: float = 1.0,
     step_lam: float = 1.0,
+    step_lam_critic: float | None = None,
     episode_structure: list[list[int]] | None = None,
 ):
     """Verlog dual-discounting GAE (ported from the verl-0.6 Verlog fork).
@@ -312,6 +313,7 @@ def compute_gae_advantage_return_dual(
         episode_structure=episode_structure,
         step_gamma=float(step_gamma),
         step_lam=float(step_lam),
+        step_lam_critic=None if step_lam_critic is None else float(step_lam_critic),
         token_gamma=float(token_gamma),
         token_lam=float(token_lam),
     )
@@ -328,73 +330,80 @@ def compute_gae_advantage_return_dual_core(
     step_gamma: float = 1.0,
     token_lam: float = 1.0,
     step_lam: float = 1.0,
+    step_lam_critic: float | None = None,
 ):
+    """Dual-discount GAE with an optional decoupled critic step-lambda (VC-PPO).
+
+    The ACTOR advantage uses ``step_lam`` (default 0.95, variance-reduced). The CRITIC return
+    target uses ``step_lam_critic`` if given (VC-PPO's decoupled-GAE: set it to 1.0 for the
+    unbiased Monte-Carlo-across-turns return). ``step_lam_critic=None`` recovers the coupled
+    behaviour (returns = actor-advantage + values). Only ``token_gamma==token_lam==1.0`` is
+    implemented, so the token level is already unbiased for both.
+    """
+    assert token_gamma == 1.0 and token_lam == 1.0, (
+        "Currently only support token_gamma=1.0 and token_lam=1.0"
+    )
     with torch.no_grad():
         # ---- turn level: collapse each turn to a scalar (V, r) ----
         turn_values = values[:, 0].clone()  # [B]  value at the turn's first token
         turn_rewards = token_level_rewards.clone().sum(-1)  # [B]  turn scalar reward
-
-        turn_advantages = torch.zeros_like(turn_values)
-        turn_returns = torch.zeros_like(turn_values)
-
-        for ep_indices in episode_structure:
-            ep_rewards = turn_rewards[ep_indices].clone()
-            ep_values = turn_values[ep_indices].clone()
-            ep_dones = dones[ep_indices].clone()
-
-            T = len(ep_indices)
-            ep_advantages = torch.zeros_like(ep_values)
-            gae = 0
-
-            for t in reversed(range(T)):
-                if t == T - 1:
-                    # last row of the chain is a pure value-carrier / bootstrap row
-                    ep_advantages[t] = 0.0
-                else:
-                    next_value = ep_values[t + 1]
-                    next_non_terminal = 1.0 - ep_dones[t] * 1.0
-                    delta = ep_rewards[t] + step_gamma * next_value * next_non_terminal - ep_values[t]
-                    gae = delta + step_gamma * step_lam * next_non_terminal * gae
-                    ep_advantages[t] = gae
-
-            ep_returns = ep_advantages + ep_values
-
-            turn_advantages[ep_indices] = ep_advantages
-            turn_returns[ep_indices] = ep_returns
-
-        # ---- broadcast turn-level results back onto each turn's tokens ----
-        nextvalues = torch.zeros_like(turn_values)  # (bs,)
-        lastgaelam = torch.zeros_like(turn_values)  # (bs,)
-        for ep_indices in episode_structure:
-            ep_dones = dones[ep_indices].clone()
-            ep_values = turn_values[ep_indices].clone()
-            next_ep_values = torch.cat(
-                [ep_values[1:], torch.tensor([ep_values[-1] / step_gamma], device=ep_values.device)]
-            )
-            next_ep_values[:-1] *= (1 - ep_dones[:-1] * 1.0)
-            nextvalues[ep_indices] = next_ep_values * step_gamma
-
-            ep_gaelam = turn_advantages[ep_indices].clone()
-            next_ep_gaelam = torch.cat([ep_gaelam[1:], torch.zeros_like(ep_gaelam[:1])])
-            next_ep_gaelam[:-1] *= (1 - ep_dones[:-1] * 1.0)
-            lastgaelam[ep_indices] = next_ep_gaelam * step_gamma * step_lam
-
-        # ---- token level ----
-        advantages_reversed = []
         gen_len = token_level_rewards.shape[-1]
 
-        for t in reversed(range(gen_len)):
-            # only the token_gamma == token_lam == 1.0 special case is implemented:
-            # every token in a turn gets (reward-to-go within turn) + next-turn bootstrap
-            # value - V(token) + next-turn GAE.
-            assert token_gamma == 1.0 and token_lam == 1.0, (
-                "Currently only support token_gamma=1.0 and token_lam=1.0"
-            )
-            token_adv = token_level_rewards[:, t:].sum(-1) + nextvalues - values[:, t] + lastgaelam
-            advantages_reversed.append(token_adv)
-        advantages = torch.stack(advantages_reversed[::-1], dim=1)
+        def _token_advantages(step_lam_x: float) -> torch.Tensor:
+            """Turn-level GAE with a given step-lambda, broadcast to token-level (unwhitened)."""
+            # turn-level recursion
+            turn_adv = torch.zeros_like(turn_values)
+            for ep_indices in episode_structure:
+                ep_rewards = turn_rewards[ep_indices].clone()
+                ep_values = turn_values[ep_indices].clone()
+                ep_dones = dones[ep_indices].clone()
+                T = len(ep_indices)
+                ep_advantages = torch.zeros_like(ep_values)
+                gae = 0
+                for t in reversed(range(T)):
+                    if t == T - 1:
+                        # last row of the chain is a pure value-carrier / bootstrap row
+                        ep_advantages[t] = 0.0
+                    else:
+                        next_value = ep_values[t + 1]
+                        next_non_terminal = 1.0 - ep_dones[t] * 1.0
+                        delta = ep_rewards[t] + step_gamma * next_value * next_non_terminal - ep_values[t]
+                        gae = delta + step_gamma * step_lam_x * next_non_terminal * gae
+                        ep_advantages[t] = gae
+                turn_adv[ep_indices] = ep_advantages
 
-        returns = advantages + values
+            # broadcast turn-level results back onto each turn's tokens
+            nextvalues = torch.zeros_like(turn_values)
+            lastgaelam = torch.zeros_like(turn_values)
+            for ep_indices in episode_structure:
+                ep_dones = dones[ep_indices].clone()
+                ep_values = turn_values[ep_indices].clone()
+                next_ep_values = torch.cat(
+                    [ep_values[1:], torch.tensor([ep_values[-1] / step_gamma], device=ep_values.device)]
+                )
+                next_ep_values[:-1] *= (1 - ep_dones[:-1] * 1.0)
+                nextvalues[ep_indices] = next_ep_values * step_gamma
+
+                ep_gaelam = turn_adv[ep_indices].clone()
+                next_ep_gaelam = torch.cat([ep_gaelam[1:], torch.zeros_like(ep_gaelam[:1])])
+                next_ep_gaelam[:-1] *= (1 - ep_dones[:-1] * 1.0)
+                lastgaelam[ep_indices] = next_ep_gaelam * step_gamma * step_lam_x
+
+            # token level (token_gamma==token_lam==1.0)
+            advantages_reversed = []
+            for t in reversed(range(gen_len)):
+                token_adv = token_level_rewards[:, t:].sum(-1) + nextvalues - values[:, t] + lastgaelam
+                advantages_reversed.append(token_adv)
+            return torch.stack(advantages_reversed[::-1], dim=1)
+
+        # actor advantage (step_lam)
+        advantages = _token_advantages(step_lam)
+        # critic return target: decoupled step_lam_critic if given (VC-PPO), else coupled.
+        if step_lam_critic is None or step_lam_critic == step_lam:
+            returns = advantages + values
+        else:
+            returns = _token_advantages(step_lam_critic) + values
+
         advantages = verl_F.masked_whiten(advantages, response_mask)
     return advantages, returns
 
