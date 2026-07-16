@@ -63,8 +63,8 @@ $PY -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.actor.fsdp_config.param_offload=True \
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-  critic.model.fsdp_config.param_offload=True \
-  critic.model.fsdp_config.optimizer_offload=True \
+  critic.fsdp.param_offload=True \
+  critic.fsdp.optimizer_offload=True \
   trainer.max_actor_ckpt_to_keep=2 \
   trainer.max_critic_ckpt_to_keep=2 \
   critic.model.path="$MODEL" \
