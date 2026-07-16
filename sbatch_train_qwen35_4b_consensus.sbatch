@@ -77,7 +77,6 @@ $PY -m verl.trainer.main_ppo \
   envs.num_envs=$NUM_ENVS \
   envs.env_config.reward_mode=individual \
   envs.env_config.students_per_batch=10 \
-  envs.env_config.format_penalty=0.1 \
   data.train_batch_size=64 \
   data.train_files=$DATA/consensus_train.parquet \
   data.val_files=$DATA/consensus_train.parquet \
