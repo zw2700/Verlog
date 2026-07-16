@@ -88,7 +88,7 @@ $PY -m verl.trainer.main_ppo \
   trainer.total_epochs=1 \
   trainer.val_before_train=False \
   trainer.test_freq=-1 \
-  trainer.save_freq=10 \
+  trainer.save_freq=20 \
   trainer.balance_batch=False \
   trainer.n_gpus_per_node=4 \
   trainer.nnodes=1 \
