@@ -413,3 +413,5 @@ envs:
     reward_mode: individual
     show_ability_vectors: true
     randomize_turn_order: false
+    # per-episode per-agent cap on total (format+invalid) penalty. null = uncapped.
+    format_penalty_cap: null
