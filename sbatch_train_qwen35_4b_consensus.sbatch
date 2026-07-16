@@ -76,8 +76,8 @@ $PY -m verl.trainer.main_ppo \
   envs.num_envs=$NUM_ENVS \
   envs.env_config.reward_mode=individual \
   data.train_batch_size=64 \
-  data.train_files=$DATA/consensus_dummy.parquet \
-  data.val_files=$DATA/consensus_dummy.parquet \
+  data.train_files=$DATA/consensus_train.parquet \
+  data.val_files=$DATA/consensus_train.parquet \
   trainer.critic_warmup=10 \
   trainer.total_training_steps=40 \
   trainer.total_epochs=1 \
