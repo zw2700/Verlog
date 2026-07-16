@@ -46,11 +46,11 @@ $PY -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.gpu_memory_utilization=0.35 \
   actor_rollout_ref.rollout.enforce_eager=False \
   actor_rollout_ref.rollout.prompt_length=4096 \
-  actor_rollout_ref.rollout.response_length=512 \
+  actor_rollout_ref.rollout.response_length=1024 \
   actor_rollout_ref.rollout.max_model_len=8192 \
   actor_rollout_ref.rollout.max_num_seqs=16 \
   data.max_prompt_length=4096 \
-  data.max_response_length=512 \
+  data.max_response_length=1024 \
   actor_rollout_ref.rollout.agent.default_agent_loop=consensus_multi_agent \
   actor_rollout_ref.rollout.agent.num_workers=$NUM_ENVS \
   actor_rollout_ref.actor.use_kl_loss=True \
@@ -76,6 +76,8 @@ $PY -m verl.trainer.main_ppo \
   envs.env_name=async_ticker_admissions \
   envs.num_envs=$NUM_ENVS \
   envs.env_config.reward_mode=individual \
+  envs.env_config.students_per_batch=10 \
+  envs.env_config.format_penalty=0.1 \
   data.train_batch_size=64 \
   data.train_files=$DATA/consensus_train.parquet \
   data.val_files=$DATA/consensus_train.parquet \
