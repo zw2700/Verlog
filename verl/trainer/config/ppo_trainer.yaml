@@ -203,6 +203,24 @@ trainer:
   # Maximum number of critic checkpoints to keep
   max_critic_ckpt_to_keep: null
 
+  # --- Best-checkpoint hook (low-overhead: keys off the per-step train metrics,
+  #     no extra rollout/eval). Saves a single actor-only checkpoint under
+  #     <default_local_dir>/best, overwriting on each new best. See _maybe_save_best.
+  #     Assumes max_actor_ckpt_to_keep is null (no rotation) so best/regular saves
+  #     don't share prune history. ---
+  # Metric key (from the per-step metrics dict) to select best on; null disables the hook.
+  save_best_on: null
+  # "max" (higher is better, e.g. reward) or "min" (lower is better, e.g. a loss).
+  save_best_mode: max
+  # EMA smoothing weight on the metric history (0.0 = raw per-step value, ->1.0 = heavy smoothing).
+  save_best_ema: 0.7
+  # Minimum smoothed improvement over the current best required to trigger a save.
+  save_best_min_delta: 0.0
+  # Do not track/save best before this step (skip noisy critic-warmup steps).
+  save_best_warmup_steps: 0
+  # Also save the critic in the best checkpoint (doubles I/O; off by default).
+  save_best_include_critic: false
+
   # Timeout (in seconds) for Ray worker to wait for registration
   ray_wait_register_center_timeout: 300
 

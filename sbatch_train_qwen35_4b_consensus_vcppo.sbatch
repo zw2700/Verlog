@@ -89,6 +89,9 @@ $PY -m verl.trainer.main_ppo \
   trainer.val_before_train=False \
   trainer.test_freq=-1 \
   trainer.save_freq=20 \
+  trainer.save_best_on=critic/score/mean \
+  trainer.save_best_warmup_steps=10 \
+  trainer.save_best_min_delta=0.005 \
   trainer.balance_batch=False \
   trainer.n_gpus_per_node=4 \
   trainer.nnodes=1 \

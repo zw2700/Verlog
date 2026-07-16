@@ -1140,6 +1140,98 @@ class RayPPOTrainer:
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
 
+    def _maybe_save_best(self, metrics: dict):
+        """Low-overhead best-checkpoint hook.
+
+        Tracks an EMA-smoothed scalar that is ALREADY present in the per-step
+        ``metrics`` dict (e.g. ``critic/score/mean``), so it adds no extra
+        rollout/eval — only float ops. On a new smoothed best (after warmup and
+        beyond ``save_best_min_delta``) it saves one actor-only checkpoint under
+        ``<default_local_dir>/best`` via :meth:`_save_best_checkpoint`, which
+        overwrites the previous best so at most one best checkpoint is on disk.
+
+        Disabled unless ``trainer.save_best_on`` names a metric key.
+        """
+        metric_name = self.config.trainer.get("save_best_on", None)
+        if not metric_name:
+            return
+        cur = metrics.get(metric_name, None)
+        if cur is None:
+            if not self._best_warned:
+                print(
+                    f"[best-ckpt] metric '{metric_name}' not found in step metrics; "
+                    "best-checkpoint hook is idle this run"
+                )
+                self._best_warned = True
+            return
+        cur = float(cur)
+        if cur != cur:  # NaN guard (e.g. warmup steps before values are valid)
+            return
+
+        mode = self.config.trainer.get("save_best_mode", "max")
+        sign = 1.0 if mode != "min" else -1.0
+        beta = float(self.config.trainer.get("save_best_ema", 0.7))
+        warmup = int(self.config.trainer.get("save_best_warmup_steps", 0))
+        min_delta = float(self.config.trainer.get("save_best_min_delta", 0.0))
+
+        # EMA smoothing so a single lucky/unlucky step does not set the "best".
+        self._best_ema = cur if self._best_ema is None else (beta * self._best_ema + (1.0 - beta) * cur)
+        metrics["trainer/best_ema"] = self._best_ema  # surface the tracked signal on wandb
+
+        if self.global_steps < warmup:
+            return
+        improved = self._best_value is None or (sign * self._best_ema) > (sign * self._best_value + min_delta)
+        if not improved:
+            return
+
+        self._best_value = self._best_ema
+        self._best_step = self.global_steps
+        metrics["trainer/best_value"] = self._best_value
+        metrics["trainer/best_step"] = float(self._best_step)
+        self._save_best_checkpoint(metric_name)
+
+    def _save_best_checkpoint(self, metric_name: str):
+        """Save a single actor-only best checkpoint, overwriting the previous one.
+
+        Written to ``<default_local_dir>/best/global_step_{N}`` with a
+        ``best.json`` pointer at ``best/``. Passes ``max_ckpt_to_keep=None`` so
+        the worker never prunes; the previous best dir is removed here instead,
+        keeping exactly one best checkpoint on disk.
+        """
+        import shutil
+
+        from verl.utils.fs import local_mkdir_safe
+
+        best_root = os.path.join(self.config.trainer.default_local_dir, "best")
+        # single best on disk: clear whatever was there before
+        if os.path.isdir(best_root):
+            shutil.rmtree(best_root, ignore_errors=True)
+
+        step_folder = os.path.join(best_root, f"global_step_{self.global_steps}")
+        actor_local_path = os.path.join(step_folder, "actor")
+        print(
+            f"[best-ckpt] new best {metric_name}(ema)={self._best_value:.4f} "
+            f"@ step {self.global_steps} -> {step_folder}"
+        )
+        self.actor_rollout_wg.save_checkpoint(actor_local_path, None, self.global_steps, max_ckpt_to_keep=None)
+
+        if self.config.trainer.get("save_best_include_critic", False) and self.use_critic:
+            critic_local_path = os.path.join(step_folder, str(Role.Critic))
+            self.critic_wg.save_checkpoint(critic_local_path, None, self.global_steps, max_ckpt_to_keep=None)
+
+        local_mkdir_safe(best_root)
+        with open(os.path.join(best_root, "best.json"), "w") as f:
+            json.dump(
+                {
+                    "metric": metric_name,
+                    "value": self._best_value,
+                    "step": self._best_step,
+                    "actor_path": actor_local_path,
+                },
+                f,
+                indent=2,
+            )
+
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
             return 0
@@ -1481,6 +1573,12 @@ class RayPPOTrainer:
         )
 
         self.global_steps = 0
+
+        # best-checkpoint tracking state (see _maybe_save_best); reset each fit()
+        self._best_value = None
+        self._best_ema = None
+        self._best_step = None
+        self._best_warned = False
 
         # load checkpoint and update weights before doing anything
         self._load_checkpoint()
@@ -1885,6 +1983,10 @@ class RayPPOTrainer:
                         batch.non_tensor_batch.get("spec_num_verify_steps", None),
                     )
                 )
+
+                # Best-checkpoint hook: reuses the fully-assembled per-step metrics
+                # (zero extra compute); may save an actor-only best checkpoint.
+                self._maybe_save_best(metrics)
 
                 # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
