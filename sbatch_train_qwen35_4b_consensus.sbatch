@@ -48,6 +48,7 @@ $PY -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.prompt_length=4096 \
   actor_rollout_ref.rollout.response_length=512 \
   actor_rollout_ref.rollout.max_model_len=8192 \
+  actor_rollout_ref.rollout.max_num_seqs=16 \
   data.max_prompt_length=4096 \
   data.max_response_length=512 \
   actor_rollout_ref.rollout.agent.default_agent_loop=consensus_multi_agent \
