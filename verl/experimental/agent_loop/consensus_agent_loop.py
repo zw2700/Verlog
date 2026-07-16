@@ -25,6 +25,7 @@ the action dict carries ``metadata={}`` and no files are written.
 """
 
 import copy
+import json
 import logging
 import os
 from typing import Any, List, Optional
@@ -292,6 +293,23 @@ class ConsensusAgentLoop(AgentLoopBase):
                 None,
                 lambda: self.tokenizer.decode(response_ids, skip_special_tokens=True),
             )
+
+            # Lightweight generation dump (env-gated) for validating decode quality —
+            # confirms the model produces coherent game-play, not gibberish.
+            _gen_log = os.environ.get("CONSENSUS_GEN_LOG")
+            if _gen_log and not is_val:
+                try:
+                    with open(_gen_log, "a", encoding="utf-8") as _f:
+                        _f.write(json.dumps({
+                            "global_steps": global_steps,
+                            "env_idx": int(env_idx),
+                            "agent_id": str(agent_id),
+                            "turn": num_turns,
+                            "n_resp_tokens": len(response_ids),
+                            "text": action_text,
+                        }, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
 
             # Wrap the action for the multi-agent env. Vote-logprob metadata is
             # stubbed out (instrumentation only) -> metadata={}.
