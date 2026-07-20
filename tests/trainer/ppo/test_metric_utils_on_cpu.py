@@ -27,6 +27,7 @@ from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
+    get_completed_critic_probe_indices,
     process_validation_metrics,
 )
 from verl.utils.metric import (
@@ -67,6 +68,33 @@ class TestReduceMetrics(unittest.TestCase):
         self.assertEqual(result["single"], 5.0)
 
 
+class TestCriticProbeTrainingRows(unittest.TestCase):
+    def test_probe_inactive_returns_none(self):
+        fields = {
+            "critic_probe_target": np.array([None, None], dtype=object),
+            "critic_probe_complete": np.array([False, False], dtype=object),
+        }
+
+        self.assertIsNone(get_completed_critic_probe_indices(fields))
+
+    def test_only_completed_probe_rows_are_selected(self):
+        fields = {
+            "critic_probe_target": np.array([1.0, -1.0, None, 1.0], dtype=object),
+            "critic_probe_complete": np.array([True, False, False, True], dtype=object),
+        }
+
+        np.testing.assert_array_equal(get_completed_critic_probe_indices(fields), np.array([0, 3]))
+
+    def test_active_probe_requires_a_completed_row(self):
+        fields = {
+            "critic_probe_target": np.array([1.0, -1.0], dtype=object),
+            "critic_probe_complete": np.array([False, False], dtype=object),
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "no naturally completed"):
+            get_completed_critic_probe_indices(fields)
+
+
 class TestComputeDataMetrics(unittest.TestCase):
     """Tests for the compute_data_metrics function."""
 
@@ -94,6 +122,7 @@ class TestComputeDataMetrics(unittest.TestCase):
             ),
             "values": torch.tensor([[0.9, 1.0], [1.1, 1.2]]),
         }
+        self.batch.non_tensor_batch = {}
 
     def test_compute_data_metrics_with_critic(self):
         """Test compute_data_metrics with critic enabled."""
@@ -125,6 +154,42 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertIn("critic/score/mean", metrics)
         self.assertIn("critic/rewards/mean", metrics)
         self.assertIn("response_length/mean", metrics)
+
+    def test_compute_data_metrics_with_critic_probe_targets(self):
+        """Probe metrics compare first-token values with targets and ignore rows without targets."""
+        self.batch.batch["values"] = torch.tensor([[0.9, 0.0], [-0.8, 0.0]])
+        self.batch.batch["returns"] = torch.tensor([[1.0, 1.0], [-1.0, -1.0]])
+        self.batch.non_tensor_batch = {
+            "critic_probe_target": np.array([1.0, -1.0], dtype=object),
+            "critic_probe_complete": np.array([True, True], dtype=object),
+            "agent_id": np.array(["prof_1", "prof_2"], dtype=object),
+        }
+
+        metrics = compute_data_metrics(self.batch, use_critic=True)
+
+        self.assertEqual(metrics["critic_probe/count"], 2.0)
+        self.assertAlmostEqual(metrics["critic_probe/s0/value_target_mse"], 0.025)
+        self.assertAlmostEqual(metrics["critic_probe/s0/return_target_mse"], 0.0)
+        self.assertAlmostEqual(metrics["critic_probe/s0/sign_accuracy"], 1.0)
+        self.assertAlmostEqual(metrics["critic_probe/s0/value_target_pearson"], 1.0)
+        self.assertAlmostEqual(metrics["critic_probe/per_agent/prof_1/value_target_mse"], 0.01)
+        self.assertAlmostEqual(metrics["critic_probe/per_agent/prof_2/value_target_mse"], 0.04)
+
+    def test_compute_data_metrics_critic_probe_ignores_incomplete_rows(self):
+        """Incomplete rollout fragments do not inflate direct critic-probe metrics."""
+        self.batch.batch["values"] = torch.tensor([[0.0, 0.0], [99.0, 99.0]])
+        self.batch.batch["returns"] = torch.tensor([[1.0, 1.0], [99.0, 99.0]])
+        self.batch.non_tensor_batch = {
+            "critic_probe_target": np.array([1.0, -1.0], dtype=object),
+            "critic_probe_complete": np.array([True, False], dtype=object),
+            "agent_id": np.array(["prof_1", "prof_1"], dtype=object),
+        }
+
+        metrics = compute_data_metrics(self.batch, use_critic=True)
+
+        self.assertEqual(metrics["critic_probe/count"], 1.0)
+        self.assertAlmostEqual(metrics["critic_probe/s0/value_target_mse"], 1.0)
+        self.assertAlmostEqual(metrics["critic_probe/s0/return_target_mse"], 0.0)
 
 
 class TestComputeTimingMetrics(unittest.TestCase):

@@ -67,6 +67,44 @@ done
   exact override(s) used, so the run is reproducible from the report alone.
 - Every Rhea training job must use `slurm/train_auton.sbatch`. Do not add copied
   sbatch launchers or alternate submission paths; use explicit Hydra overrides.
+
+### Critic sanity probe
+
+The hiring wrapper has an opt-in critic-only diagnostic. `critic_probe_mode=visible`
+samples an independent `-1` or `+1` terminal target for every professor and episode,
+adds that professor's target to the visible prompt, zeros intermediate environment
+rewards, and replaces terminal utilities with the sampled targets. `hidden` returns
+the same random targets without adding them to the prompt and is the negative control.
+Normal hiring behavior is unchanged when the mode is `off`.
+
+Freeze the actor for the entire probe, remove KL shaping, and use undiscounted
+Monte Carlo returns so completed-episode targets are exactly `-1` or `+1`:
+
+```bash
+for mode in visible hidden; do
+  sbatch slurm/train_auton.sbatch \
+    tag=critic-probe-$mode \
+    envs.env_config.critic_probe_mode=$mode \
+    algorithm.use_kl_in_reward=false \
+    algorithm.step_gamma=1.0 \
+    algorithm.step_lam=1.0 \
+    trainer.critic_warmup=20 \
+    trainer.critic_warmup_batch_repeat_times=1 \
+    trainer.critic_warmup_batch_divide_ratio=1 \
+    trainer.total_training_steps=20
+done
+```
+
+Read `critic_probe/s0/value_target_mse`, `critic_probe/s0/value_target_pearson`,
+and `critic_probe/s0/sign_accuracy`. The visible run should improve sharply on
+fresh random targets; the hidden run should remain near chance. Also verify
+`critic_probe/s0/return_target_mse` stays near zero, which checks terminal reward
+routing and GAE independently of value prediction. Probe metrics exclude bootstrap
+rows and incomplete rollout fragments. Critic updates in an active probe also use
+only naturally completed episode rows, preventing learned bootstrap values from
+contaminating the fixed-label regression check. The resulting irregular batch is
+padded to a multiple of the critic world size times its per-GPU microbatch size so
+all FSDP ranks execute the same number of collectives.
 # Repository Guidelines
 
 ## Project Context
@@ -160,6 +198,12 @@ $wandb
 ```
 
 Default W&B project for this repo is `unscripted`. The entity is the user's active W&B entity unless `WANDB_ENTITY` is explicitly set.
+
+New PPO runs also log `config_provenance` alongside the resolved W&B config. It contains the
+primary Hydra config name, exact `hydra_task_overrides`, the resolved `original_config` composed
+without task overrides, and `resolved_changes` mapping every affected config path to its original
+and overridden values. Use W&B's Run Comparer with **Diff only** for cross-run comparison, and use
+`config_provenance` when the question is specifically whether a value came from a Hydra override.
 
 ## Coding Style & Conventions
 
