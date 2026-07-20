@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1350" height="650" viewBox="0 0 1350 650">
+<defs>
+<linearGradient id="instantGradient" x1="0" y1="1" x2="0" y2="0">
+<stop offset="0%" stop-color="#fee2e2"/>
+<stop offset="100%" stop-color="#991b1b"/>
+</linearGradient>
+<linearGradient id="negotiationGradient" x1="0" y1="1" x2="0" y2="0">
+<stop offset="0%" stop-color="#dbeafe"/>
+<stop offset="100%" stop-color="#1e40af"/>
+</linearGradient>
+</defs>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<text x="675.0" y="34.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#111827">SFT raw100 step16 Preference Scenarios</text>
+<text x="675.0" y="57.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563">Bar height = episode count; hue = category; shade intensity = socially optimal rate</text>
+<line x1="85" y1="82" x2="85" y2="538" stroke="#111827" stroke-width="1"/>
+<line x1="85" y1="538" x2="1060" y2="538" stroke="#111827" stroke-width="1"/>
+<line x1="85" y1="538.0" x2="1060" y2="538.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="75.0" y="542.0" text-anchor="end" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563">0</text>
+<line x1="85" y1="445.7" x2="1060" y2="445.7" stroke="#e5e7eb" stroke-width="1"/>
+<text x="75.0" y="449.7" text-anchor="end" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563">34</text>
+<line x1="85" y1="353.4" x2="1060" y2="353.4" stroke="#e5e7eb" stroke-width="1"/>
+<text x="75.0" y="357.4" text-anchor="end" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563">68</text>
+<line x1="85" y1="261.1" x2="1060" y2="261.1" stroke="#e5e7eb" stroke-width="1"/>
+<text x="75.0" y="265.1" text-anchor="end" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563">102</text>
+<line x1="85" y1="168.9" x2="1060" y2="168.9" stroke="#e5e7eb" stroke-width="1"/>
+<text x="75.0" y="172.9" text-anchor="end" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#4b5563">136</text>
+<text x="22.0" y="310.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="400" fill="#374151" transform="rotate(-90 22 310.0)">Episodes</text>
+<rect x="128.2" y="462.0" width="76.0" height="76.0" fill="#a43030" stroke="#ffffff" stroke-width="1.4"/>
+<text x="166.2" y="504.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">28</text>
+<rect x="128.2" y="410.4" width="76.0" height="51.6" fill="#8199d9" stroke="#ffffff" stroke-width="1.4"/>
+<text x="166.2" y="440.2" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">19</text>
+<text x="166.2" y="402.4" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">n=47</text>
+<text x="166.2" y="560.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">All 3</text>
+<text x="166.2" y="574.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">share top</text>
+<rect x="290.8" y="434.9" width="76.0" height="103.1" fill="#b44f4f" stroke="#ffffff" stroke-width="1.4"/>
+<text x="328.8" y="490.4" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">38</text>
+<rect x="290.8" y="320.9" width="76.0" height="114.0" fill="#7c95d6" stroke="#ffffff" stroke-width="1.4"/>
+<text x="328.8" y="381.9" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">42</text>
+<text x="328.8" y="312.9" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">n=80</text>
+<text x="328.8" y="560.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">Prof 1+2</text>
+<text x="328.8" y="574.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">share top</text>
+<rect x="453.2" y="467.4" width="76.0" height="70.6" fill="#b85858" stroke="#ffffff" stroke-width="1.4"/>
+<text x="491.2" y="506.7" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">26</text>
+<rect x="453.2" y="253.0" width="76.0" height="214.4" fill="#5f7aca" stroke="#ffffff" stroke-width="1.4"/>
+<text x="491.2" y="364.2" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">79</text>
+<text x="491.2" y="245.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">n=105</text>
+<text x="491.2" y="560.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">Prof 1+3</text>
+<text x="491.2" y="574.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">share top</text>
+<rect x="615.8" y="472.9" width="76.0" height="65.1" fill="#c77676" stroke="#ffffff" stroke-width="1.4"/>
+<text x="653.8" y="509.4" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">24</text>
+<rect x="615.8" y="274.7" width="76.0" height="198.1" fill="#5f7aca" stroke="#ffffff" stroke-width="1.4"/>
+<text x="653.8" y="377.8" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">73</text>
+<text x="653.8" y="266.7" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">n=97</text>
+<text x="653.8" y="560.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">Prof 2+3</text>
+<text x="653.8" y="574.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">share top</text>
+<rect x="778.2" y="399.6" width="76.0" height="138.4" fill="#c77575" stroke="#ffffff" stroke-width="1.4"/>
+<text x="816.2" y="472.8" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">51</text>
+<rect x="778.2" y="84.7" width="76.0" height="314.9" fill="#a2b7e6" stroke="#ffffff" stroke-width="1.4"/>
+<text x="816.2" y="246.1" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">116</text>
+<rect x="778.2" y="82.0" width="76.0" height="2.7" fill="#fef3c7" stroke="#ffffff" stroke-width="1.4"/>
+<text x="816.2" y="74.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">n=168</text>
+<text x="816.2" y="560.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">No pair</text>
+<text x="816.2" y="574.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">shares top</text>
+<rect x="940.8" y="532.6" width="76.0" height="5.4" fill="#fee2e2" stroke="#ffffff" stroke-width="1.4"/>
+<rect x="940.8" y="529.9" width="76.0" height="2.7" fill="#dbeafe" stroke="#ffffff" stroke-width="1.4"/>
+<text x="978.8" y="521.9" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">n=3</text>
+<text x="978.8" y="560.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">Multi-pair</text>
+<text x="978.8" y="574.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#111827">no common top</text>
+<text x="1108.0" y="76.0" text-anchor="start" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">Category</text>
+<rect x="1108" y="79" width="19" height="22" fill="#e5b0b0" stroke="#ffffff"/>
+<rect x="1127" y="79" width="19" height="22" fill="#b24d4d" stroke="#ffffff"/>
+<text x="1156.0" y="96.0" text-anchor="start" font-family="Arial, sans-serif" font-size="13" font-weight="400" fill="#111827">Instant</text>
+<rect x="1108" y="109" width="19" height="22" fill="#acc0ea" stroke="#ffffff"/>
+<rect x="1127" y="109" width="19" height="22" fill="#4d6ac3" stroke="#ffffff"/>
+<text x="1156.0" y="126.0" text-anchor="start" font-family="Arial, sans-serif" font-size="13" font-weight="400" fill="#111827">Negotiation</text>
+<rect x="1108" y="139" width="19" height="22" fill="#eccb98" stroke="#ffffff"/>
+<rect x="1127" y="139" width="19" height="22" fill="#c67b38" stroke="#ffffff"/>
+<text x="1156.0" y="156.0" text-anchor="start" font-family="Arial, sans-serif" font-size="13" font-weight="400" fill="#111827">Stalled</text>
+<text x="1108.0" y="202.0" text-anchor="start" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#111827">SO rate scale</text>
+<rect x="1108" y="220" width="28" height="128" fill="url(#instantGradient)" stroke="#d1d5db"/>
+<text x="1146.0" y="225.0" text-anchor="start" font-family="Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563">1.0</text>
+<text x="1146.0" y="348.0" text-anchor="start" font-family="Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563">0.0</text>
+<text x="1122.0" y="369.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563">Instant</text>
+<rect x="1228" y="220" width="28" height="128" fill="url(#negotiationGradient)" stroke="#d1d5db"/>
+<text x="1242.0" y="369.0" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="400" fill="#4b5563">Negotiation</text>
+<text x="85.0" y="612.0" text-anchor="start" font-family="Arial, sans-serif" font-size="11" font-weight="400" fill="#6b7280">Segment labels show counts when space allows; exact SO rates are in the CSV.</text>
+</svg>
