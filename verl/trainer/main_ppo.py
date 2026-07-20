@@ -32,6 +32,67 @@ from verl.utils.device import is_cuda_available
 from verl.utils.import_utils import load_extern_type
 
 
+def _resolved_config_changes(original, overridden):
+    """Return leaf-level changes between two resolved config containers."""
+    changes = {}
+
+    def compare(path, original_value, overridden_value):
+        if isinstance(original_value, dict) and isinstance(overridden_value, dict):
+            for key in sorted(original_value.keys() | overridden_value.keys()):
+                key_path = f"{path}.{key}" if path else str(key)
+                if key not in original_value:
+                    changes[key_path] = {
+                        "change_type": "added",
+                        "original": None,
+                        "overridden": overridden_value[key],
+                    }
+                elif key not in overridden_value:
+                    changes[key_path] = {
+                        "change_type": "removed",
+                        "original": original_value[key],
+                        "overridden": None,
+                    }
+                else:
+                    compare(key_path, original_value[key], overridden_value[key])
+            return
+
+        if original_value != overridden_value:
+            changes[path] = {
+                "change_type": "changed",
+                "original": original_value,
+                "overridden": overridden_value,
+            }
+
+    compare("", original, overridden)
+    return changes
+
+
+def _build_config_provenance(original_config, overridden_config, primary_config, task_overrides):
+    """Build W&B-safe Hydra provenance from resolved config containers."""
+    original = OmegaConf.to_container(original_config, resolve=True)
+    overridden = OmegaConf.to_container(overridden_config, resolve=True)
+    if not isinstance(original, dict) or not isinstance(overridden, dict):
+        raise TypeError("Hydra training configs must resolve to dictionaries")
+
+    return {
+        "primary_config": primary_config,
+        "hydra_task_overrides": list(task_overrides),
+        "original_config": original,
+        "resolved_changes": _resolved_config_changes(original, overridden),
+    }
+
+
+def _capture_hydra_config_provenance(config):
+    """Recompose the primary config without task overrides and compare it to the run config."""
+    from hydra.core.hydra_config import HydraConfig
+
+    hydra_config = HydraConfig.get()
+    primary_config = hydra_config.job.config_name
+    task_overrides = hydra_config.overrides.task
+    original_config = hydra.compose(config_name=primary_config)
+    return _build_config_provenance(original_config, config, primary_config, task_overrides)
+
+
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
 def main(config):
     """Main entry point for PPO training with Hydra configuration management.
@@ -40,18 +101,22 @@ def main(config):
         config_dict: Hydra configuration dictionary containing training parameters.
     """
     import torch
+
     torch.cuda.empty_cache()
-    run_ppo(config)
+    config_provenance = _capture_hydra_config_provenance(config)
+    run_ppo(config, config_provenance=config_provenance)
 
 
 # Define a function to run the PPO-like training process
-def run_ppo(config) -> None:
+def run_ppo(config, config_provenance=None) -> None:
     """Initialize Ray cluster and run distributed PPO training process.
 
     Args:
         config: Training configuration object containing all necessary parameters
                 for distributed PPO training including Ray initialization settings,
                 model paths, and training hyperparameters.
+        config_provenance: Optional resolved original config and Hydra override metadata
+                           to include in experiment tracking.
     """
     # Check if Ray is not initialized
     if not ray.is_initialized():
@@ -84,7 +149,7 @@ def run_ppo(config) -> None:
         runner = TaskRunner.options(runtime_env={"nsight": nsight_options}).remote()
     else:
         runner = TaskRunner.remote()
-    ray.get(runner.run.remote(config))
+    ray.get(runner.run.remote(config, config_provenance=config_provenance))
 
     # [Optional] get the path of the timeline trace file from the configuration, default to None
     # This file is used for performance analysis
@@ -224,7 +289,7 @@ class TaskRunner:
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
             self.mapping[Role.RefPolicy] = "global_pool"
 
-    def run(self, config):
+    def run(self, config, config_provenance=None):
         """Execute the main PPO training workflow.
 
         This method sets up the distributed training environment, initializes
@@ -233,6 +298,8 @@ class TaskRunner:
         Args:
             config: Training configuration object containing all parameters needed
                    for setting up and running the PPO training process.
+            config_provenance: Optional resolved original config and Hydra override metadata
+                               to include in experiment tracking.
         """
         # Print the initial configuration. `resolve=True` will evaluate symbolic values.
         from pprint import pprint
@@ -300,6 +367,7 @@ class TaskRunner:
         # Initialize the PPO trainer.
         trainer = RayPPOTrainer(
             config=config,
+            config_provenance=config_provenance,
             tokenizer=tokenizer,
             processor=processor,
             role_worker_mapping=self.role_worker_mapping,

@@ -522,6 +522,19 @@ class ToolAgentLoop(AgentLoopBase):
                     return first_val
             return info_obj
 
+        def _critic_probe_target(info_obj, professor_id):
+            if not isinstance(info_obj, dict) or professor_id is None:
+                return None
+            targets = info_obj.get("critic_probe_targets")
+            if not isinstance(targets, dict):
+                for value in info_obj.values():
+                    if isinstance(value, dict) and isinstance(value.get("critic_probe_targets"), dict):
+                        targets = value["critic_probe_targets"]
+                        break
+            if not isinstance(targets, dict) or str(professor_id) not in targets:
+                return None
+            return float(targets[str(professor_id)])
+
         if is_val:
             messages, info = env.reset(agent_id=agent_id)
         else:
@@ -560,6 +573,10 @@ class ToolAgentLoop(AgentLoopBase):
         # the consensus-closing agent's utility ever reaches a training row
         # (see bugs_todo.md: non-closing professors receive zero outcome reward).
         episode_last_row: dict[str, int] = {}
+        # Real rollout rows from the current env episode. Completed probe
+        # episodes are marked so diagnostics can exclude rollout truncations,
+        # whose returns legitimately use critic bootstrapping instead of +/-1.
+        episode_row_indices: list[int] = []
         game_entries = []
         log_this_game = (
             self.game_log_path is not None
@@ -669,6 +686,7 @@ class ToolAgentLoop(AgentLoopBase):
             observation = copy.deepcopy(messages)
 
             acting_agent_id = agent_id
+            critic_probe_target = _critic_probe_target(info, acting_agent_id)
             with _phase(profile, "env_step"):
                 messages, reward, terminated, truncated, info = env.step(actions)
             # info may be a flat dict (single-agent env) or agent-keyed dict
@@ -715,6 +733,14 @@ class ToolAgentLoop(AgentLoopBase):
                 env_idx=env_idx,
                 agent_id=str(acting_agent_id),
                 turn_id=num_turns,
+                # DataProto.concat requires every non-tensor field to have one
+                # entry per row. Keep both probe fields present even for
+                # non-probe and incomplete rows; the metric filters on the
+                # explicit completion flag below.
+                extra_fields={
+                    "critic_probe_target": critic_probe_target,
+                    "critic_probe_complete": False,
+                },
             )
             num_turns += 1
 
@@ -730,6 +756,11 @@ class ToolAgentLoop(AgentLoopBase):
             # value-carrier bootstrap rows are appended after it.
             if done:
                 outputs.append(turn_data)
+                episode_row_indices.append(len(outputs) - 1)
+
+                if critic_probe_target is not None:
+                    for row_index in episode_row_indices:
+                        outputs[row_index].extra_fields["critic_probe_complete"] = True
 
                 # Route every other professor's terminal utility onto their last
                 # turn of this episode (an interior row of their (env, agent)
@@ -749,6 +780,7 @@ class ToolAgentLoop(AgentLoopBase):
                             outputs[row_idx].rewards += float(other_reward)
                             outputs[row_idx].done = True
                 episode_last_row = {}
+                episode_row_indices = []
 
                 # Per-episode reward/error diagnosis in the game log.
                 if log_this_game:
@@ -771,6 +803,7 @@ class ToolAgentLoop(AgentLoopBase):
                 # counter, keep it as the final real row and append bootstrap
                 # rows below.
                 outputs.append(turn_data)
+                episode_row_indices.append(len(outputs) - 1)
                 episode_last_row[str(acting_agent_id)] = len(outputs) - 1
 
             if reserved_turn_fills_counter and not is_val:
@@ -793,6 +826,10 @@ class ToolAgentLoop(AgentLoopBase):
                         env_idx=env_idx,
                         agent_id=f"prof_{end_agent_id+1}",
                         turn_id=num_turns,
+                        extra_fields={
+                            "critic_probe_target": None,
+                            "critic_probe_complete": False,
+                        },
                     )
                     outputs.append(bootstrap_turn)
                 bootstrap_added = True
@@ -850,6 +887,10 @@ class ToolAgentLoop(AgentLoopBase):
                     env_idx=env_idx,
                     agent_id=boot_agent_id,
                     turn_id=num_turns,
+                    extra_fields={
+                        "critic_probe_target": None,
+                        "critic_probe_complete": False,
+                    },
                 )
                 outputs.append(bootstrap_turn)
 

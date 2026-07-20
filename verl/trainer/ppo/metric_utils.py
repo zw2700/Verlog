@@ -26,6 +26,46 @@ from verl import DataProto
 from verl.utils.import_utils import deprecated
 
 
+def get_completed_critic_probe_indices(non_tensor_batch: dict[str, Any]) -> np.ndarray | None:
+    """Return rows eligible for critic updates in an active +/-1 probe.
+
+    Probe rollouts can end with an unfinished episode fragment. Its GAE return
+    legitimately bootstraps from the current critic, so including it in the
+    critic update would contaminate the fixed-label sanity check. ``None``
+    means probe mode is inactive; an active probe must contain at least one
+    naturally completed row.
+    """
+    targets_raw = non_tensor_batch.get("critic_probe_target")
+    complete_raw = non_tensor_batch.get("critic_probe_complete")
+    if targets_raw is None and complete_raw is None:
+        return None
+    if targets_raw is None or complete_raw is None:
+        raise ValueError("critic probe target and completion fields must be present together")
+
+    targets = np.asarray(targets_raw, dtype=object)
+    complete = np.asarray(complete_raw, dtype=object)
+    if targets.ndim != 1 or complete.ndim != 1 or len(targets) != len(complete):
+        raise ValueError("critic probe target and completion fields must be aligned 1D arrays")
+
+    active_mask = np.fromiter((target is not None for target in targets), dtype=bool, count=len(targets))
+    if not active_mask.any():
+        return None
+
+    for target in targets[active_mask]:
+        if not np.isfinite(float(target)) or float(target) not in (-1.0, 1.0):
+            raise ValueError(f"critic probe target must be +/-1, got {target!r}")
+
+    complete_mask = np.fromiter(
+        (value is not None and bool(value) for value in complete),
+        dtype=bool,
+        count=len(complete),
+    )
+    indices = np.flatnonzero(active_mask & complete_mask)
+    if indices.size == 0:
+        raise RuntimeError("critic probe batch contains no naturally completed training rows")
+    return indices
+
+
 @deprecated("verl.utils.metric.reduce_metrics")
 def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
     """
@@ -258,6 +298,66 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
                 metrics[f"critic/per_agent/{safe_aid}/return_mean"] = rets_a.mean().detach().item()
                 metrics[f"critic/per_agent/{safe_aid}/value_mean"] = vals_a.mean().detach().item()
                 metrics[f"critic/per_agent/{safe_aid}/count"] = float(row_mask.sum().detach().item())
+
+        # Critic probe metrics compare the first-token value directly with the
+        # known +/-1 target. Bootstrap rows and incomplete rollout fragments
+        # are excluded here and from critic updates in probe mode; the latter
+        # use a learned bootstrap value and would contaminate the fixed target.
+        probe_targets_raw = batch.non_tensor_batch.get("critic_probe_target")
+        probe_complete_raw = batch.non_tensor_batch.get("critic_probe_complete")
+        if probe_targets_raw is not None and probe_complete_raw is not None:
+            probe_indices = []
+            probe_targets = []
+            for index, (target, complete) in enumerate(zip(probe_targets_raw, probe_complete_raw, strict=True)):
+                if target is None or complete is None or not bool(complete):
+                    continue
+                try:
+                    target_float = float(target)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isfinite(target_float):
+                    continue
+                probe_indices.append(index)
+                probe_targets.append(target_float)
+
+            if probe_indices:
+                index_tensor = torch.tensor(probe_indices, device=values.device, dtype=torch.long)
+                target_tensor = torch.tensor(probe_targets, device=values.device, dtype=values.dtype)
+                probe_values = values[index_tensor, 0]
+                probe_returns = returns[index_tensor, 0]
+
+                metrics["critic_probe/count"] = float(len(probe_indices))
+                metrics["critic_probe/s0/value_target_mse"] = (
+                    (probe_values - target_tensor).square().mean().detach().item()
+                )
+                metrics["critic_probe/s0/return_target_mse"] = (
+                    (probe_returns - target_tensor).square().mean().detach().item()
+                )
+                metrics["critic_probe/s0/sign_accuracy"] = (
+                    (torch.sign(probe_values) == torch.sign(target_tensor)).float().mean().detach().item()
+                )
+
+                centered_values = probe_values - probe_values.mean()
+                centered_targets = target_tensor - target_tensor.mean()
+                pearson_denom = torch.sqrt(
+                    centered_values.square().sum() * centered_targets.square().sum()
+                )
+                if probe_values.numel() > 1 and pearson_denom.item() > 0:
+                    metrics["critic_probe/s0/value_target_pearson"] = (
+                        (centered_values * centered_targets).sum().div(pearson_denom).detach().item()
+                    )
+
+                if "agent_id" in batch.non_tensor_batch:
+                    agent_ids = np.asarray(batch.non_tensor_batch["agent_id"])
+                    probe_indices_np = np.asarray(probe_indices)
+                    probe_agent_ids = agent_ids[probe_indices_np]
+                    for agent_id in sorted(set(probe_agent_ids.tolist())):
+                        agent_mask_np = probe_agent_ids == agent_id
+                        agent_mask = torch.from_numpy(agent_mask_np).to(values.device)
+                        safe_agent_id = str(agent_id).replace("/", "_")
+                        metrics[f"critic_probe/per_agent/{safe_agent_id}/value_target_mse"] = (
+                            (probe_values[agent_mask] - target_tensor[agent_mask]).square().mean().detach().item()
+                        )
 
     # multi-turn conversation (num_turns for each trajectory)
     if "__num_turns__" in batch.non_tensor_batch:

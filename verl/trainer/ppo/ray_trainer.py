@@ -47,6 +47,7 @@ from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
+    get_completed_critic_probe_indices,
     process_validation_metrics,
 )
 from verl.trainer.ppo.mismatch_helper import compute_rollout_importance_weights
@@ -380,6 +381,7 @@ class RayPPOTrainer:
         collate_fn=None,
         train_sampler: Optional[Sampler] = None,
         device_name=None,
+        config_provenance=None,
     ):
         """
         Initialize distributed PPO trainer with Ray backend.
@@ -399,12 +401,14 @@ class RayPPOTrainer:
             collate_fn: Function to collate data samples into batches.
             train_sampler (Optional[Sampler], optional): Sampler for the training dataset. Defaults to None.
             device_name (str, optional): Device name for training (e.g., "cuda", "cpu"). Defaults to None.
+            config_provenance: Optional Hydra original-config and override metadata for experiment tracking.
         """
 
         # Store the tokenizer for text processing
         self.tokenizer = tokenizer
         self.processor = processor
         self.config = config
+        self.config_provenance = config_provenance
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
 
@@ -1108,23 +1112,38 @@ class RayPPOTrainer:
         return batch, {}
 
     def fit(self):
+        """Run PPO training and always close experiment tracking explicitly."""
+        from omegaconf import OmegaConf
+
+        from verl.utils.tracking import Tracking
+
+        tracking_config = OmegaConf.to_container(self.config, resolve=True)
+        if self.config_provenance is not None:
+            tracking_config["config_provenance"] = self.config_provenance
+
+        logger = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+            default_backend=self.config.trainer.logger,
+            config=tracking_config,
+        )
+
+        exit_code = 0
+        try:
+            return self._fit(logger)
+        except BaseException:
+            exit_code = 1
+            raise
+        finally:
+            logger.finish(exit_code=exit_code)
+
+    def _fit(self, logger):
         """
         The training loop of PPO.
         The driver process only need to call the compute functions of the worker group through RPC
         to construct the PPO dataflow.
         The light-weight advantage computation is done on the driver process.
         """
-        from omegaconf import OmegaConf
-
-        from verl.utils.tracking import Tracking
-
-        logger = Tracking(
-            project_name=self.config.trainer.project_name,
-            experiment_name=self.config.trainer.experiment_name,
-            default_backend=self.config.trainer.logger,
-            config=OmegaConf.to_container(self.config, resolve=True),
-        )
-
         self.global_steps = 0
 
         # load checkpoint before doing anything
@@ -1353,17 +1372,51 @@ class RayPPOTrainer:
                         batch4train = remove_last_turn_in_episode_multiagent(batch)
                     else:
                         batch4train = remove_last_turn_in_episode(batch)
+
+                    # A critic probe is a fixed-label regression test. Only
+                    # naturally completed episodes have the injected +/-1
+                    # return; unfinished fragments bootstrap from the current
+                    # value model and must not enter the probe critic update.
+                    critic_batch = batch4train
+                    probe_indices = get_completed_critic_probe_indices(critic_batch.non_tensor_batch)
+                    critic_probe_active = probe_indices is not None
+                    if probe_indices is not None:
+                        metrics["critic_probe/train_rows_before_filter"] = float(len(critic_batch))
+                        critic_batch = critic_batch.select_idxs(probe_indices)
+                        metrics["critic_probe/train_rows"] = float(len(critic_batch))
+
                     # from step 2 to step `critic_warmup`, we only update the critic, and only use part of the batch
                     if self.config.trainer.critic_warmup >= self.global_steps:
                         ratio = self.config.trainer.critic_warmup_batch_divide_ratio
-                        num_indices = max(1, int(len(batch4train) / ratio))
-                        indices_to_keep = torch.randperm(len(batch4train))[:num_indices]
-                        batch4train = batch4train.select_idxs(indices_to_keep)
+                        num_indices = max(1, int(len(critic_batch) / ratio))
+                        indices_to_keep = torch.randperm(len(critic_batch))[:num_indices]
+                        critic_batch = critic_batch.select_idxs(indices_to_keep)
+
+                    if critic_probe_active:
+                        # FSDP ranks must execute the same number of critic
+                        # microbatches or one rank can leave the others stuck
+                        # in a collective. Filtering completed episodes makes
+                        # the row count irregular, so pad to a whole number of
+                        # per-rank microbatches. Duplicate padding rows affect
+                        # only the update; probe metrics use the original batch.
+                        critic_micro_batch_size = self.config.critic.ppo_micro_batch_size_per_gpu
+                        critic_batch_divisor = self.critic_wg.world_size
+                        if not self.config.critic.use_dynamic_bsz:
+                            if critic_micro_batch_size is None:
+                                raise ValueError("critic probe requires a configured critic micro batch size")
+                            critic_batch_divisor *= int(critic_micro_batch_size)
+                        unpadded_critic_rows = len(critic_batch)
+                        critic_batch, critic_pad_rows = pad_dataproto_to_divisor(
+                            critic_batch, critic_batch_divisor
+                        )
+                        metrics["critic_probe/update_rows_unpadded"] = float(unpadded_critic_rows)
+                        metrics["critic_probe/padding_rows"] = float(critic_pad_rows)
+                        metrics["critic_probe/update_rows"] = float(len(critic_batch))
 
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
-                            critic_output = self.critic_wg.update_critic(batch4train)
+                            critic_output = self.critic_wg.update_critic(critic_batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
