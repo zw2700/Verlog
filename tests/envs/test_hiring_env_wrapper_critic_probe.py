@@ -38,6 +38,16 @@ class _FakeHiringEnv(gym.Env):
             )
         return None, {agent: 9.0 for agent in self.professor_ids}, True, False, {"active_agent": "prof_3"}
 
+    def _build_chat_messages(self, agent_id):
+        return self._messages(agent_id)
+
+    def _get_student_utilities_by_agent(self):
+        return {
+            "prof_1": [1.0, 2.0],
+            "prof_2": [3.0, 4.0],
+            "prof_3": [5.0, 6.0],
+        }
+
 
 def _last_user_content(messages):
     return next(message["content"] for message in reversed(messages) if message["role"] == "user")
@@ -84,3 +94,18 @@ def test_hidden_probe_replaces_rewards_without_changing_prompt():
 def test_probe_rejects_unknown_mode():
     with pytest.raises(ValueError, match="critic_probe_mode"):
         AsyncTickerEnvWrapper(_FakeHiringEnv(), critic_probe_mode="surprise")
+
+
+def test_wrapper_exposes_per_professor_bootstrap_observation_and_critic_context():
+    wrapper = AsyncTickerEnvWrapper(_FakeHiringEnv())
+    wrapper.reset()
+
+    assert wrapper.get_observation_for_agent("prof_3")[0]["content"] == "You are prof_3."
+    assert wrapper.get_critic_context() == {
+        "professor_ids": ["prof_1", "prof_2", "prof_3"],
+        "student_utilities": {
+            "prof_1": [1.0, 2.0],
+            "prof_2": [3.0, 4.0],
+            "prof_3": [5.0, 6.0],
+        },
+    }

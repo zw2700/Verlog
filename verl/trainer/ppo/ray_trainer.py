@@ -24,6 +24,7 @@ import uuid
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from pprint import pprint
 from typing import Optional
 
@@ -61,6 +62,108 @@ from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+
+
+def as_critic_input(data: DataProto) -> DataProto:
+    """Create a zero-copy DataProto view using critic-only prompt tensors.
+
+    Actor/reference workers continue to receive the original canonical keys.
+    Only calls into the critic get this remapped view, which prevents privileged
+    state from changing actor log-probabilities or policy updates.
+    """
+    required = {
+        "critic_prompts",
+        "critic_input_ids",
+        "critic_attention_mask",
+        "critic_position_ids",
+    }
+    missing = sorted(required.difference(data.batch.keys()))
+    if missing:
+        raise KeyError(f"critic-only input tensors are missing: {missing}")
+
+    tensors = {
+        key: value
+        for key, value in data.batch.items()
+        if not key.startswith("critic_") and key not in {"prompts", "input_ids", "attention_mask", "position_ids"}
+    }
+    tensors.update(
+        {
+            "prompts": data.batch["critic_prompts"],
+            "input_ids": data.batch["critic_input_ids"],
+            "attention_mask": data.batch["critic_attention_mask"],
+            "position_ids": data.batch["critic_position_ids"],
+        }
+    )
+    meta_info = dict(data.meta_info)
+    meta_info["global_token_num"] = data.batch["critic_attention_mask"].sum(dim=-1).tolist()
+    return DataProto.from_dict(
+        tensors=tensors,
+        non_tensors=data.non_tensor_batch,
+        meta_info=meta_info,
+    )
+
+
+def without_critic_inputs(data: DataProto) -> DataProto:
+    """Return a zero-copy view that cannot expose critic-only token tensors."""
+    tensors = {key: value for key, value in data.batch.items() if not key.startswith("critic_")}
+    return DataProto.from_dict(
+        tensors=tensors,
+        non_tensors=data.non_tensor_batch,
+        meta_info=dict(data.meta_info),
+    )
+
+
+def append_critic_row_log(data: DataProto, *, global_step: int) -> None:
+    """Persist compact row-level critic targets/predictions for offline diagnosis."""
+    log_path = os.getenv("VERL_CRITIC_ROW_LOG_PATH")
+    if not log_path:
+        return
+    required = {"values", "returns", "advantages", "rewards", "done", "response_mask"}
+    missing = sorted(required.difference(data.batch.keys()))
+    if missing:
+        raise KeyError(f"critic row logging requires tensors: {missing}")
+
+    def _field(name, index, default=None):
+        values = data.non_tensor_batch.get(name)
+        if values is None:
+            return default
+        value = values[index]
+        return value.item() if isinstance(value, np.generic) else value
+
+    values_s0 = data.batch["values"][:, 0].detach().cpu().tolist()
+    returns_s0 = data.batch["returns"][:, 0].detach().cpu().tolist()
+    advantages_s0 = data.batch["advantages"][:, 0].detach().cpu().tolist()
+    rewards = data.batch["rewards"].detach().cpu().tolist()
+    dones = data.batch["done"].detach().cpu().tolist()
+    response_tokens = data.batch["response_mask"].sum(dim=-1).detach().cpu().tolist()
+
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for index in range(len(data)):
+            env_idx = _field("env_idx", index)
+            episode_index = _field("episode_index", index)
+            row = {
+                "schema_version": 1,
+                "global_step": global_step,
+                "env_idx": env_idx,
+                "episode_index": episode_index,
+                "episode_uid": f"step{global_step}:env{env_idx}:episode{episode_index}",
+                "episode_turn_id": _field("episode_turn_id", index),
+                "turn_id": _field("turn_id", index),
+                "agent_id": _field("agent_id", index),
+                "is_bootstrap": bool(_field("is_bootstrap", index, False)),
+                "done": bool(dones[index]),
+                "reward": float(rewards[index]),
+                "value_s0": float(values_s0[index]),
+                "return_s0": float(returns_s0[index]),
+                "advantage_s0": float(advantages_s0[index]),
+                "response_tokens": int(response_tokens[index]),
+                "actor_prompt_tokens": _field("actor_prompt_tokens", index),
+                "critic_prompt_tokens": _field("critic_prompt_tokens", index),
+                "critic_observation_mode": _field("critic_observation_mode", index),
+            }
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 def get_episode_structure(episode_idx: np.ndarray):
     """
@@ -1286,7 +1389,7 @@ class RayPPOTrainer:
 
                     # recompute old_log_probs
                     with marked_timer("old_log_prob", timing_raw, color="blue"):
-                        old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
+                        old_log_prob = self.actor_rollout_wg.compute_log_prob(without_critic_inputs(batch))
                         entropys = old_log_prob.batch["entropys"]
                         response_masks = batch.batch["response_mask"]
                         loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
@@ -1306,15 +1409,15 @@ class RayPPOTrainer:
                         # compute reference log_prob
                         with marked_timer("ref", timing_raw, color="olive"):
                             if not self.ref_in_actor:
-                                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(without_critic_inputs(batch))
                             else:
-                                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
+                                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(without_critic_inputs(batch))
                             batch = batch.union(ref_log_prob)
 
                     # compute values
                     if self.use_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
-                            values = self.critic_wg.compute_values(batch)
+                            values = self.critic_wg.compute_values(as_critic_input(batch))
                             batch = batch.union(values)
 
                     with marked_timer("adv", timing_raw, color="brown"):
@@ -1366,6 +1469,7 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+                        append_critic_row_log(batch, global_step=self.global_steps)
                     
                     # the last turn for each episode (parallel environment) is only used for bootstrapping the value,
                     if _has_agent_id(batch.non_tensor_batch) and "turn_id" in batch.non_tensor_batch:
@@ -1416,7 +1520,7 @@ class RayPPOTrainer:
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
-                            critic_output = self.critic_wg.update_critic(critic_batch)
+                            critic_output = self.critic_wg.update_critic(as_critic_input(critic_batch))
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
@@ -1425,7 +1529,7 @@ class RayPPOTrainer:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                            actor_output = self.actor_rollout_wg.update_actor(batch4train)
+                            actor_output = self.actor_rollout_wg.update_actor(without_critic_inputs(batch4train))
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 

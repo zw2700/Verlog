@@ -150,6 +150,32 @@ class AsyncTickerEnvWrapper(gym.Wrapper):
         """
         return self.last_obs, self.last_info
 
+    def get_observation_for_agent(self, agent_id: str) -> Any:
+        """Build the current actor-visible observation for one professor.
+
+        Bootstrap value rows are evaluated after the final real action in a
+        rollout fragment. They therefore need each professor's current state,
+        not a copy of whichever professor happened to act last.
+        """
+        agent_id = str(agent_id)
+        if agent_id not in self.professor_ids:
+            raise ValueError(f"unknown professor id {agent_id!r}")
+        observation = self.env._build_chat_messages(agent_id)
+        if self.critic_probe_mode == "visible":
+            observation = _append_probe_prompt(observation, self._critic_probe_targets[agent_id])
+        return observation
+
+    def get_critic_context(self) -> dict[str, Any]:
+        """Return deterministic privileged state approved for critic prompts."""
+        utilities = self.env._get_student_utilities_by_agent()
+        return {
+            "professor_ids": list(self.professor_ids),
+            "student_utilities": {
+                professor_id: [float(value) for value in utilities[professor_id]]
+                for professor_id in self.professor_ids
+            },
+        }
+
     def reset(self, agent_id=None, **kwargs):
         """Reset environment and cache initial observation.
 

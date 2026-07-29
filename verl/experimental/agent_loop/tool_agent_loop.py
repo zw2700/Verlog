@@ -68,6 +68,55 @@ from verl.utils.rollout_trace import rollout_trace_op
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+CRITIC_OBSERVATION_MODES = {"actor_visible", "all_utilities"}
+_CRITIC_CONTEXT_HEADER = "<CRITIC_ONLY_PRIVILEGED_STATE>"
+
+
+def build_critic_messages(
+    messages: list[dict[str, Any]],
+    *,
+    mode: str,
+    critic_context: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    """Return the critic prompt without changing the actor-visible messages."""
+    if mode not in CRITIC_OBSERVATION_MODES:
+        raise ValueError(f"critic observation mode must be one of {sorted(CRITIC_OBSERVATION_MODES)}, got {mode!r}")
+    if mode == "actor_visible":
+        return copy.deepcopy(messages)
+    if not isinstance(critic_context, dict):
+        raise ValueError("all_utilities critic observation requires critic context")
+
+    professor_ids = [str(value) for value in critic_context.get("professor_ids", [])]
+    utility_map = critic_context.get("student_utilities")
+    if not professor_ids or not isinstance(utility_map, dict):
+        raise ValueError("critic context must contain professor_ids and student_utilities")
+    student_counts = {len(utility_map[professor_id]) for professor_id in professor_ids}
+    if len(student_counts) != 1:
+        raise ValueError("all professor utility vectors must have the same number of students")
+
+    lines = [
+        _CRITIC_CONTEXT_HEADER,
+        "Training-only state for the value critic; this block is never visible to the acting policy.",
+        "Utilities for every professor and student:",
+    ]
+    lines.append("student\t" + "\t".join(professor_ids))
+    for student_idx in range(next(iter(student_counts))):
+        values = [float(utility_map[professor_id][student_idx]) for professor_id in professor_ids]
+        lines.append(f"{student_idx}\t" + "\t".join(f"{value:.4f}" for value in values))
+    lines.append("</CRITIC_ONLY_PRIVILEGED_STATE>")
+    privileged_block = "\n".join(lines)
+
+    critic_messages = copy.deepcopy(messages)
+    for message in critic_messages:
+        if message.get("role") == "system":
+            if _CRITIC_CONTEXT_HEADER in str(message.get("content", "")):
+                raise ValueError("critic-only state was already present in the actor prompt")
+            message["content"] = f"{message.get('content', '')}\n\n{privileged_block}"
+            break
+    else:
+        critic_messages.insert(0, {"role": "system", "content": privileged_block})
+    return critic_messages
+
 class AgentState(Enum):
     PENDING = "pending"
     GENERATING = "generating"
@@ -136,6 +185,13 @@ class ToolAgentLoop(AgentLoopBase):
         print(f"Initialized tools: {cls.tools}")
 
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
+        critic_observation = config.get("critic_observation", {})
+        cls.critic_observation_mode = str(critic_observation.get("mode", "actor_visible"))
+        if cls.critic_observation_mode not in CRITIC_OBSERVATION_MODES:
+            raise ValueError(
+                "critic_observation.mode must be one of "
+                f"{sorted(CRITIC_OBSERVATION_MODES)}, got {cls.critic_observation_mode!r}"
+            )
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
         cls.io_log_path = os.getenv("VERL_AGENT_IO_LOG_PATH", "logs/agent_model_io5.log")
@@ -484,6 +540,42 @@ class ToolAgentLoop(AgentLoopBase):
         )
         return minimal_ids[-self.prompt_length:]
 
+    async def _build_critic_prompt_ids(
+        self,
+        env,
+        messages: list[dict[str, Any]],
+        actor_prompt_ids: list[int],
+    ) -> list[int]:
+        if self.critic_observation_mode == "actor_visible":
+            # Preserve exact actor/critic input equality in the baseline cell.
+            return copy.deepcopy(actor_prompt_ids)
+        if not hasattr(env, "get_critic_context"):
+            raise TypeError("all_utilities critic observation requires env.get_critic_context()")
+        critic_messages = build_critic_messages(
+            messages,
+            mode=self.critic_observation_mode,
+            critic_context=env.get_critic_context(),
+        )
+        return await self.loop.run_in_executor(None, lambda: self._build_prompt_ids(critic_messages))
+
+    async def _build_bootstrap_prompts(self, env, professor_id: str) -> tuple[list[int], list[int]]:
+        if not hasattr(env, "get_observation_for_agent"):
+            raise TypeError("multi-agent bootstrap requires env.get_observation_for_agent()")
+        actor_messages = env.get_observation_for_agent(professor_id)
+        actor_prompt_ids = await self.loop.run_in_executor(None, lambda: self._build_prompt_ids(actor_messages))
+        critic_prompt_ids = await self._build_critic_prompt_ids(env, actor_messages, actor_prompt_ids)
+        return actor_prompt_ids, critic_prompt_ids
+
+    def _bootstrap_response_ids(self, outputs: list[AgentLoopOutput]) -> list[int]:
+        if outputs and outputs[-1].response_ids:
+            return [outputs[-1].response_ids[0]]
+        fallback_id = self.tokenizer.eos_token_id
+        if fallback_id is None:
+            fallback_id = self.tokenizer.pad_token_id
+        if fallback_id is None:
+            raise ValueError("tokenizer must define eos_token_id or pad_token_id for bootstrap rows")
+        return [int(fallback_id)]
+
     def _detect_loop(self, messages: list[dict[str, Any]]) -> bool:
         """
         Detect if a loop occurred by checking if the last message contains a hint.
@@ -560,6 +652,11 @@ class ToolAgentLoop(AgentLoopBase):
                 None,
                 lambda: self._build_prompt_ids(messages),
             )
+            critic_prompt_ids = await self._build_critic_prompt_ids(env, messages, prompt_ids)
+
+        professor_ids = [str(value) for value in getattr(env, "professor_ids", [])]
+        if not professor_ids:
+            raise ValueError("multi-agent rollout requires the environment to expose professor_ids")
         
         outputs = []
         num_turns = 0
@@ -680,8 +777,6 @@ class ToolAgentLoop(AgentLoopBase):
                     "metadata": vote_meta,
                 }}
 
-            last_prompt_ids = copy.deepcopy(prompt_ids)
-
             # Store observation before step (always, for loop detection)
             observation = copy.deepcopy(messages)
 
@@ -723,6 +818,7 @@ class ToolAgentLoop(AgentLoopBase):
             
             turn_data = AgentLoopOutput(
                 prompt_ids=prompt_ids,
+                critic_prompt_ids=critic_prompt_ids,
                 response_ids=response_ids,
                 response_mask=response_mask,
                 response_logprobs=response_logprobs,
@@ -740,6 +836,12 @@ class ToolAgentLoop(AgentLoopBase):
                 extra_fields={
                     "critic_probe_target": critic_probe_target,
                     "critic_probe_complete": False,
+                    "critic_observation_mode": self.critic_observation_mode,
+                    "critic_prompt_tokens": len(critic_prompt_ids),
+                    "actor_prompt_tokens": len(prompt_ids),
+                    "episode_index": episode_index,
+                    "episode_turn_id": len(episode_turns) - 1,
+                    "is_bootstrap": False,
                 },
             )
             num_turns += 1
@@ -812,10 +914,14 @@ class ToolAgentLoop(AgentLoopBase):
                 # row (removed before training; reward ignored by GAE, kept 0.0).
                 # A terminal turn_data appended above stays interior (bootstrap
                 # rows get the higher turn_id and are the ones dropped).
-                for end_agent_id in range(3):
-                    boot_resp_ids = [outputs[-1].response_ids[0]] if outputs else [151645]
+                for boot_agent_id in professor_ids:
+                    boot_prompt_ids, boot_critic_prompt_ids = await self._build_bootstrap_prompts(
+                        env, boot_agent_id
+                    )
+                    boot_resp_ids = self._bootstrap_response_ids(outputs)
                     bootstrap_turn = AgentLoopOutput(
-                        prompt_ids=last_prompt_ids,
+                        prompt_ids=boot_prompt_ids,
+                        critic_prompt_ids=boot_critic_prompt_ids,
                         response_ids=boot_resp_ids,
                         response_mask=[1],
                         response_logprobs=[0.0] * len(boot_resp_ids),
@@ -824,11 +930,17 @@ class ToolAgentLoop(AgentLoopBase):
                         done=True,
                         num_turns=num_turns,
                         env_idx=env_idx,
-                        agent_id=f"prof_{end_agent_id+1}",
+                        agent_id=boot_agent_id,
                         turn_id=num_turns,
                         extra_fields={
                             "critic_probe_target": None,
                             "critic_probe_complete": False,
+                            "critic_observation_mode": self.critic_observation_mode,
+                            "critic_prompt_tokens": len(boot_critic_prompt_ids),
+                            "actor_prompt_tokens": len(boot_prompt_ids),
+                            "episode_index": episode_index,
+                            "episode_turn_id": len(episode_turns),
+                            "is_bootstrap": True,
                         },
                     )
                     outputs.append(bootstrap_turn)
@@ -849,19 +961,20 @@ class ToolAgentLoop(AgentLoopBase):
                     None,
                     lambda: self._build_prompt_ids(messages),
                 )
+                critic_prompt_ids = await self._build_critic_prompt_ids(env, messages, prompt_ids)
                 continue
 
             prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self._build_prompt_ids(messages),
             )
+            critic_prompt_ids = await self._build_critic_prompt_ids(env, messages, prompt_ids)
 
         # Episode completed naturally (not truncated) - add final bootstrap turn
         # This happens when done=True from environment termination
         if not bootstrap_added:
             # for loop over all agents
-            for end_agent_id in range(3):
-                boot_agent_id = f"prof_{end_agent_id+1}"
+            for boot_agent_id in professor_ids:
                 # Validation: each agent's bootstrap row carries that agent's
                 # OWN terminal utility (the val metric reads the last row per
                 # (env, agent)). Previously every agent got the closer's
@@ -874,9 +987,11 @@ class ToolAgentLoop(AgentLoopBase):
                         boot_reward = scalar_reward
                 else:
                     boot_reward = 0.0
-                boot_resp_ids = [outputs[-1].response_ids[0]] if outputs else [151645]
+                boot_prompt_ids, boot_critic_prompt_ids = await self._build_bootstrap_prompts(env, boot_agent_id)
+                boot_resp_ids = self._bootstrap_response_ids(outputs)
                 bootstrap_turn = AgentLoopOutput(
-                    prompt_ids=last_prompt_ids,
+                    prompt_ids=boot_prompt_ids,
+                    critic_prompt_ids=boot_critic_prompt_ids,
                     response_ids=boot_resp_ids,
                     response_mask=[1],
                     response_logprobs=[0.0] * len(boot_resp_ids),
@@ -890,6 +1005,12 @@ class ToolAgentLoop(AgentLoopBase):
                     extra_fields={
                         "critic_probe_target": None,
                         "critic_probe_complete": False,
+                        "critic_observation_mode": self.critic_observation_mode,
+                        "critic_prompt_tokens": len(boot_critic_prompt_ids),
+                        "actor_prompt_tokens": len(boot_prompt_ids),
+                        "episode_index": max(0, episode_index - 1),
+                        "episode_turn_id": len(episode_turns),
+                        "is_bootstrap": True,
                     },
                 )
                 outputs.append(bootstrap_turn)

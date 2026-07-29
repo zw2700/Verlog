@@ -214,6 +214,8 @@ class AgentLoopOutput(BaseModel):
 
     prompt_ids: list[int]
     """Prompt token ids."""
+    critic_prompt_ids: Optional[list[int]] = None
+    """Critic-only prompt ids. ``None`` means use the actor prompt unchanged."""
     response_ids: list[int]
     """Response token ids including LLM generated token, tool response token."""
     response_mask: list[int]
@@ -249,16 +251,24 @@ class _InternalAgentLoopOutput(AgentLoopOutput):
 
     prompt_ids: torch.Tensor
     """Padded prompt token ids."""
+    critic_prompt_ids: torch.Tensor
+    """Padded critic-only prompt token ids."""
     response_ids: torch.Tensor
     """Padded response token ids."""
     input_ids: torch.Tensor
     """Padded input ids(prompt_ids + response_ids)."""
+    critic_input_ids: torch.Tensor
+    """Padded critic input ids(critic_prompt_ids + the exact actor response_ids)."""
     position_ids: torch.Tensor
     """Padded position ids."""
+    critic_position_ids: torch.Tensor
+    """Padded position ids for critic_input_ids."""
     response_mask: torch.Tensor
     """Padded response mask."""
     attention_mask: torch.Tensor
     """Padded attention mask."""
+    critic_attention_mask: torch.Tensor
+    """Padded attention mask for critic_input_ids."""
     response_logprobs: Optional[torch.Tensor] = None
     """Padded log probabilities for the response tokens."""
     multi_modal_inputs: Optional[dict[str, torch.Tensor]] = None
@@ -686,6 +696,18 @@ class AgentLoopWorker:
                     prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
                     prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
 
+                critic_prompt_ids = output.critic_prompt_ids or output.prompt_ids
+                critic_prompt_output = self.tokenizer.pad(
+                    {"input_ids": critic_prompt_ids},
+                    padding="max_length",
+                    max_length=self.config.actor_rollout_ref.rollout.prompt_length,
+                    return_tensors="pt",
+                    return_attention_mask=True,
+                )
+                if critic_prompt_output["input_ids"].dim() == 1:
+                    critic_prompt_output["input_ids"] = critic_prompt_output["input_ids"].unsqueeze(0)
+                    critic_prompt_output["attention_mask"] = critic_prompt_output["attention_mask"].unsqueeze(0)
+
                 self.tokenizer.padding_side = "right"
                 response_output = self.tokenizer.pad(
                     {"input_ids": output.response_ids},
@@ -716,6 +738,12 @@ class AgentLoopWorker:
                 response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
                 attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
                 input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
+                critic_attention_mask = torch.cat(
+                    [critic_prompt_output["attention_mask"], response_output["attention_mask"]], dim=1
+                )
+                critic_input_ids = torch.cat(
+                    [critic_prompt_output["input_ids"], response_output["input_ids"]], dim=1
+                )
 
                 # Handle multi-modal inputs and position_ids calculation
                 # Only support Qwen2VLImageProcessor for multi-modal processing currently
@@ -757,6 +785,7 @@ class AgentLoopWorker:
                     position_ids = torch.cat((text_position_ids, vision_position_ids), dim=1)  # (1, 4, seq_length)
                 else:
                     position_ids = compute_position_id_with_mask(attention_mask)  # (1, seq_len)
+                critic_position_ids = compute_position_id_with_mask(critic_attention_mask)
                 enable_async_reward = (
                     self.rm_executor is not None and self.config.reward_model.enable_resource_pool
                 ) or not self.config.reward_model.enable
@@ -790,11 +819,15 @@ class AgentLoopWorker:
 
                 new_output = _InternalAgentLoopOutput(
                     prompt_ids=prompt_output["input_ids"],
+                    critic_prompt_ids=critic_prompt_output["input_ids"],
                     response_ids=response_output["input_ids"],
                     input_ids=input_ids,
+                    critic_input_ids=critic_input_ids,
                     position_ids=position_ids,
+                    critic_position_ids=critic_position_ids,
                     response_mask=response_mask,
                     attention_mask=attention_mask,
+                    critic_attention_mask=critic_attention_mask,
                     response_logprobs=response_logprobs,
                     multi_modal_inputs=multi_modal_inputs,
                     multi_modal_data=output.multi_modal_data,
@@ -816,11 +849,15 @@ class AgentLoopWorker:
         """Process the padded outputs from _run_agent_loop and combine them into a batch."""
         # Convert lists back to tensors and stack them to create a batch.
         prompt_ids = torch.cat([input.prompt_ids for input in inputs], dim=0)
+        critic_prompt_ids = torch.cat([input.critic_prompt_ids for input in inputs], dim=0)
         response_ids = torch.cat([input.response_ids for input in inputs], dim=0)
         response_mask = torch.cat([input.response_mask for input in inputs], dim=0)
         attention_mask = torch.cat([input.attention_mask for input in inputs], dim=0)
         input_ids = torch.cat([input.input_ids for input in inputs], dim=0)
+        critic_input_ids = torch.cat([input.critic_input_ids for input in inputs], dim=0)
         position_ids = torch.cat([input.position_ids for input in inputs], dim=0)
+        critic_position_ids = torch.cat([input.critic_position_ids for input in inputs], dim=0)
+        critic_attention_mask = torch.cat([input.critic_attention_mask for input in inputs], dim=0)
         rewards = torch.tensor([input.rewards for input in inputs], dtype=torch.float32)
         done = torch.tensor([input.done for input in inputs], dtype=torch.bool)
         optional_outputs = {}
@@ -830,12 +867,16 @@ class AgentLoopWorker:
         batch = TensorDict(
             {
                 "prompts": prompt_ids,  # [bsz, prompt_length]
+                "critic_prompts": critic_prompt_ids,  # [bsz, prompt_length]
                 "responses": response_ids,  # [bsz, response_length]
                 "response_mask": response_mask,  # [bsz, response_length]
                 "input_ids": input_ids,  # [bsz, prompt_length + response_length]
+                "critic_input_ids": critic_input_ids,
                 "attention_mask": attention_mask,  # [bsz, prompt_length + response_length]
+                "critic_attention_mask": critic_attention_mask,
                 # position_ids: [bsz, 3, prompt_length + response_length] or [bsz, prompt_length + response_length]
                 "position_ids": position_ids,
+                "critic_position_ids": critic_position_ids,
                 "rewards": rewards,
                 "done": done,
                 **optional_outputs,
