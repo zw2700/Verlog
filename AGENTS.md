@@ -67,6 +67,24 @@ done
   exact override(s) used, so the run is reproducible from the report alone.
 - Every Rhea training job must use `slurm/train_auton.sbatch`. Do not add copied
   sbatch launchers or alternate submission paths; use explicit Hydra overrides.
+- Do not update a checkout that may be serving running jobs. Runs from different
+  code versions must use separate commit-pinned worktrees/directories. Record the
+  exact commit and submit directory, and leave that source tree immutable until
+  every job using it has finished. Cells in one matched experiment may share one
+  immutable worktree when they use the exact same commit.
+
+### Asymmetric critic observations
+
+`critic_observation.mode=actor_visible` gives the value critic exactly the actor
+prompt. `critic_observation.mode=all_utilities` appends a training-only table of
+every professor's per-student utilities to the critic system prompt. In both modes,
+the acting policy and reference policy receive only the original actor-visible
+prompt, and the critic evaluates the exact response tokens sampled by that policy.
+
+Every job writes compact row-level critic diagnostics to
+`logs/critic_rows_<jobid>.jsonl`, including value, return, advantage, reward,
+professor, episode/turn identity, bootstrap status, and actor/critic prompt lengths.
+W&B also records prompt-length deltas and the critic fit/correlation metrics.
 
 ### Critic sanity probe
 

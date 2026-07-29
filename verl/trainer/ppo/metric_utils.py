@@ -248,6 +248,25 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
     }
 
+    if "critic_attention_mask" in batch.batch:
+        critic_prompt_mask = batch.batch["critic_attention_mask"][:, :-max_response_length]
+        critic_prompt_length = critic_prompt_mask.sum(dim=-1).float()
+        privileged_delta = critic_prompt_length - prompt_length
+        metrics.update(
+            {
+                "critic_prompt_length/mean": critic_prompt_length.mean().detach().item(),
+                "critic_prompt_length/max": critic_prompt_length.max().detach().item(),
+                "critic_prompt_length/min": critic_prompt_length.min().detach().item(),
+                "critic_prompt_length/clip_ratio": torch.mean(
+                    torch.eq(critic_prompt_length, critic_prompt_mask.size(-1)).float()
+                )
+                .detach()
+                .item(),
+                "critic_prompt_length/privileged_token_delta_mean": privileged_delta.mean().detach().item(),
+                "critic_prompt_length/privileged_token_delta_max": privileged_delta.max().detach().item(),
+            }
+        )
+
     # ---- additional critic diagnostics ----
     # vf_explained_var (above) measures regression scale-fit; the metrics here add
     # rank-order quality (Pearson), an episode-start V/return signal that bypasses

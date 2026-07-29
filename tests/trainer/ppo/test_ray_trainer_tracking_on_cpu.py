@@ -1,7 +1,9 @@
 import pytest
+import torch
 from omegaconf import OmegaConf
 
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl import DataProto
+from verl.trainer.ppo.ray_trainer import RayPPOTrainer, as_critic_input, without_critic_inputs
 
 
 class _Tracking:
@@ -55,3 +57,30 @@ def test_fit_finishes_tracking_with_failure_exit_code(monkeypatch):
         trainer.fit()
 
     assert _Tracking.instances[0].finish_calls == [1]
+
+
+def test_actor_and_critic_views_route_disjoint_prompt_tensors():
+    actor_ids = torch.tensor([[1, 2, 3]])
+    critic_ids = torch.tensor([[7, 8, 9]])
+    data = DataProto.from_dict(
+        tensors={
+            "prompts": actor_ids[:, :2],
+            "input_ids": actor_ids,
+            "attention_mask": torch.ones_like(actor_ids),
+            "position_ids": torch.arange(3).unsqueeze(0),
+            "critic_prompts": critic_ids[:, :2],
+            "critic_input_ids": critic_ids,
+            "critic_attention_mask": torch.ones_like(critic_ids),
+            "critic_position_ids": torch.arange(3).unsqueeze(0),
+            "responses": torch.tensor([[3]]),
+        }
+    )
+
+    actor_view = without_critic_inputs(data)
+    critic_view = as_critic_input(data)
+
+    assert not any(key.startswith("critic_") for key in actor_view.batch.keys())
+    assert torch.equal(actor_view.batch["input_ids"], actor_ids)
+    assert not any(key.startswith("critic_") for key in critic_view.batch.keys())
+    assert torch.equal(critic_view.batch["input_ids"], critic_ids)
+    assert torch.equal(critic_view.batch["responses"], data.batch["responses"])

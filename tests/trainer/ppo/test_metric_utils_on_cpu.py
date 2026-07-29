@@ -155,6 +155,19 @@ class TestComputeDataMetrics(unittest.TestCase):
         self.assertIn("critic/rewards/mean", metrics)
         self.assertIn("response_length/mean", metrics)
 
+    def test_compute_data_metrics_reports_critic_prompt_length_delta(self):
+        self.batch.batch["critic_attention_mask"] = torch.tensor(
+            [
+                [1, 1, 1, 1],
+                [0, 1, 1, 1],
+            ]
+        )
+
+        metrics = compute_data_metrics(self.batch, use_critic=True)
+
+        self.assertAlmostEqual(metrics["critic_prompt_length/mean"], 1.5)
+        self.assertAlmostEqual(metrics["critic_prompt_length/privileged_token_delta_mean"], -0.5)
+
     def test_compute_data_metrics_with_critic_probe_targets(self):
         """Probe metrics compare first-token values with targets and ignore rows without targets."""
         self.batch.batch["values"] = torch.tensor([[0.9, 0.0], [-0.8, 0.0]])

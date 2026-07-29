@@ -86,7 +86,9 @@ export VERL_AGENT_IO_LOG_PATH="$PROJECT_DIR/logs/agent_model_${JOB_ID}.log"
 export VERL_AGENT_IO_LOG_FULL_PROMPT=0
 export VERL_AGENT_EPISODE_LOG_PATH="$PROJECT_DIR/logs/episode_log_${JOB_ID}.jsonl"
 export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_${JOB_ID}.log"
+export VERL_CRITIC_ROW_LOG_PATH="$PROJECT_DIR/logs/critic_rows_${JOB_ID}.jsonl"
 : > "$VERL_AGENT_IO_LOG_PATH"
+: > "$VERL_CRITIC_ROW_LOG_PATH"
 
 echo "=== Job ${JOB_ID} on ${SLURMD_NODENAME:-local} — $(date) ==="
 echo "PROJECT_DIR=$PROJECT_DIR  ENV_PATH=$ENV_PATH  GPUs=$NUM_GPUS_PER_NODE  Ray CPUs=$RAY_NUM_CPUS"
