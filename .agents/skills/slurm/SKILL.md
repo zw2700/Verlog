@@ -237,7 +237,7 @@ All project training runs must use the canonical launcher:
 slurm/train_auton.sbatch
 ```
 
-Configure private paths and optional secrets in the git-ignored `slurm/auton.env`; install it from `slurm/auton.env.example` and verify the values before submitting. The launcher preserves Slurm's `CUDA_VISIBLE_DEVICES`, passes `SLURM_CPUS_PER_TASK` explicitly to Ray, and isolates Ray temporary state by job. Do not run global `ray stop`, `pkill`, or `/tmp/ray` cleanup from a shared-node launcher because another allocation owned by the same user may be active on that node.
+Configure private paths and optional secrets in the git-ignored `slurm/auton.env`; install it from `slurm/auton.env.example` and verify the values before submitting. The launcher preserves Slurm's `CUDA_VISIBLE_DEVICES`, passes `SLURM_CPUS_PER_TASK` explicitly to Ray, isolates Ray temporary state by job on node-local storage, and refuses to launch when an allocated GPU already contains a compute process. Do not run global `ray stop`, `pkill`, or `/tmp/ray` cleanup from a shared-node launcher because another allocation owned by the same user may be active on that node.
 
 This is the only supported Rhea training entrypoint. Put experiment changes in Hydra overrides after the launcher path; do not create copied sbatch files or alternate submission paths.
 

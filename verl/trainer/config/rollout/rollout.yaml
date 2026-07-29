@@ -205,6 +205,10 @@ agent:
   # Number of agent loop workers
   num_workers: 8
 
+  # Ray CPU reservation for each per-loop reward-manager actor. Keep this
+  # fractional: one full CPU per actor can deadlock startup before rollout.
+  reward_manager_num_cpus: 0.25
+
   # default agent loop to use if `agent_name` not set in RL dataset
   default_agent_loop: tool_agent
 
