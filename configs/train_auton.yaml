@@ -62,6 +62,7 @@ actor_rollout_ref:
     agent:
       default_agent_loop: multi_tool_agent_loop
       num_workers: ${envs.num_envs}
+      reward_manager_num_cpus: 0.25
   actor:
     optim:
       lr: 1e-6

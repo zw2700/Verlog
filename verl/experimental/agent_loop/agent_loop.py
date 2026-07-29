@@ -524,7 +524,13 @@ class AgentLoopWorker:
                 self.processor.chat_template = self.config.actor_rollout_ref.model.custom_chat_template
             self.tokenizer.chat_template = self.config.actor_rollout_ref.model.custom_chat_template
 
+        reward_manager_num_cpus = self.config.actor_rollout_ref.rollout.agent.reward_manager_num_cpus
+        if reward_manager_num_cpus < 0:
+            raise ValueError(
+                f"reward_manager_num_cpus must be non-negative, got {reward_manager_num_cpus}"
+            )
         self.reward_manager_worker = RewardManagerWorker.options(
+            num_cpus=reward_manager_num_cpus,
             scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                 node_id=ray.get_runtime_context().get_node_id(),
                 soft=False,
