@@ -22,9 +22,11 @@ set -euo pipefail
 # ============================================================================
 
 EXP_NOTES=(
-    "Model: Qwen3-4B; Env changes: no termination on all voted no consensus; enforce same-socket GPU allocation (enforce-binding + NUMA guard, cf. jobs 15930/16085); dynamic token-based micro-batching (ppo_max_token_len=8192) instead of fixed micro batch (micro=4 OOMed in update_actor backward, job 15856); critic warmup repeat=10/divide=1 (same 2,560 critic samples/step as 40/4, without generating 4x and dropping 3/4)."
+    "Model: Qwen3-4B initialized from the merged Haiku-SFT raw25 step-7 checkpoint, selected from the 500-episode RL-decoding evaluation (50.4% socially optimal, 97.2% valid episodes, 867 mean output tokens)."
+    "Environment and objective settings match train_auton_frank.sbatch (no termination on all-voted-no consensus, random-permutation professor preferences)."
     "Episode jsonl sharded per worker"
-    "Critic-only model snapshots saved at steps 1, 5, 10, 30, and 75; optimizer and actor checkpoints disabled."
+    "Actor checkpoints (model, optimizer, and extra state) and critic model-only snapshots saved at steps 1, 5, 10, 30, and 75."
+    # "Retains the SFT launcher performance settings: ppo_epochs=1, ppo_max_token_len=12288, and critic_warmup=5."
 )
 
 echo "=== Experiment Notes ==="
@@ -66,15 +68,20 @@ export TMPDIR="/zfsauton/scratch/frankwu2/tmp"
 # node-local disk, NOT the NFS $TMPDIR: NFS socket/metadata latency makes the
 # raylet/GCS/dashboard startup time out ("node timed out during startup", job
 # 22425). /tmp is node-local tmpfs here. Job-scoped so co-tenant jobs on a shared
-# node never collide -- this used to be RAY_TMPDIR="$TMPDIR", one path shared by
-# every run of this script, which is what made the `rm -rf` in the cleanup below
-# destructive to siblings (job 23033). Removed on exit by the trap so tmpfs does
-# not accumulate stale dirs across jobs on the node.
+# node never collide -- the sibling launchers used RAY_TMPDIR="$TMPDIR", one path
+# shared by every run, which is what made the `rm -rf` in the old cleanup below
+# destructive to a co-tenant job (job 23033). Removed on exit by the trap so tmpfs
+# does not accumulate stale dirs across jobs. Ray appends /ray/session_* here.
 export RAY_TMPDIR="/tmp/ray_${USER:-$(id -un)}_${SLURM_JOB_ID:-$$}"
 trap 'rm -rf "$RAY_TMPDIR" 2>/dev/null || true' EXIT
 mkdir -p "$HF_HOME" "$TMPDIR" "$CHECKPOINT_ROOT" logs
 
 export WANDB_API_KEY="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"
+# wandb-core writes its handshake port file under $TMPDIR (NFS here); the parent
+# polls it for only 30s by default and intermittently times out under NFS
+# close-to-open latency (ServicePollForTokenError, e.g. job 22316). Give the
+# service backend more slack.
+export WANDB__SERVICE_WAIT="${WANDB__SERVICE_WAIT:-300}"
 
 # ============================================================================
 # SYSTEM LIMITS & RAY
@@ -147,11 +154,18 @@ rm -rf "$RAY_TMPDIR" 2>/dev/null || true
 mkdir -p "$RAY_TMPDIR"
 
 export RAY_NUM_CPUS=${SLURM_CPUS_PER_TASK}
+# NOTE: these two are NOT honored by this Ray version (the dashboard still starts
+# and crashes). The reliable disable is include_dashboard=False passed to
+# ray.init via the +ray_kwargs.ray_init.include_dashboard=False override below.
 export RAY_INCLUDE_DASHBOARD=0
 export RAY_DISABLE_DASHBOARD=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
-export RAY_raylet_startup_timeout_ms=120000
+# On busy nodes the raylet is CPU-starved and misses the default node-registration
+# window ("GCS cannot find the node ... registration may not be complete before
+# the timeout", jobs 22425/22526). Give startup more slack.
+export RAY_raylet_startup_timeout_ms=300000
+export RAY_raylet_start_wait_time_s=300
 export RAY_gcs_server_request_timeout_seconds=60
 export RAY_BACKEND_LOG_LEVEL=warning
 
@@ -319,7 +333,7 @@ export VERL_PROFILE_AGENT_LOOP="${VERL_PROFILE_AGENT_LOOP:-1}"
 # ============================================================================
 
 NUM_ENVS=32
-MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-4B}"
+MODEL_PATH="${MODEL_PATH:-/zfsauton/scratch/frankwu2/unscripted/Verlog/models/sft/haiku_qwen3_sweep_v1/raw25_step7}"
 ENABLE_THINKING="${ENABLE_THINKING:-false}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
 VAL_BEFORE_TRAIN="${VAL_BEFORE_TRAIN:-false}"
@@ -330,11 +344,22 @@ CRITIC_MICRO_BATCH_SIZE="${CRITIC_MICRO_BATCH_SIZE:-4}"
 FORWARD_BATCH_SIZE="${FORWARD_BATCH_SIZE:-16}"
 # Token-based micro-batching: micro batch sizes above are ignored while this is
 # true; each micro-batch is packed up to PPO_MAX_TOKEN_LEN tokens instead.
-# 8192 keeps the worst case (~8192+4608 tokens) below the ~18k that OOMed 15856.
+# 12288 (up from 8192): fewer, larger micro-batches -> less per-batch FSDP
+# all-gather/reduce-scatter overhead on the update phases (~83% of step time
+# under the verbose SFT checkpoint, cf. job 20539). Watch the first post-warmup
+# actor update for OOM on the 48GB A6000s (micro=4 OOMed update_actor backward
+# in 15856); drop back to 8192 if it OOMs.
 USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-True}"
 PPO_MAX_TOKEN_LEN="${PPO_MAX_TOKEN_LEN:-8192}"
 OFFLOAD=false
+# 1 (down from 2): each PPO epoch is a full fwd+bwd over the whole batch, and
+# ppo_mini_batch_size==train_batch_size so there is one minibatch -> the epoch
+# count multiplies the dominant update phases directly. 1 ~halves update time;
+# costs reusing each rollout once instead of twice.
 PPO_EPOCHS=2
+# 5 (down from 10): critic vf_loss plateaus by warmup step 5 in job 20539
+# (0.44->0.073->0.037->0.024->0.019, flat/rising after); steps 6-10 were ~18h
+# of near-zero marginal critic gain under the long SFT sequences.
 CRITIC_WARMUP="${CRITIC_WARMUP:-10}"
 # repeat=10/divide=1: generate exactly what the critic trains on (2,560
 # samples/step). The old 40/4 combo generated 4x more and dropped 3/4 of it -
@@ -442,6 +467,7 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=16384 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=True \
+    +ray_kwargs.ray_init.include_dashboard=False \
     trainer.balance_batch=False \
     trainer.critic_warmup=${CRITIC_WARMUP} \
     trainer.critic_warmup_batch_repeat_times=${CRITIC_WARMUP_BATCH_REPEAT_TIMES} \
@@ -454,7 +480,7 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
     trainer.save_steps='[1,5,10,30,75]' \
-    trainer.save_actor_checkpoint=False \
+    trainer.save_actor_checkpoint=True \
     trainer.save_critic_checkpoint=True \
     critic.checkpoint.save_contents='["model"]' \
     critic.checkpoint.load_contents='["model"]' \
