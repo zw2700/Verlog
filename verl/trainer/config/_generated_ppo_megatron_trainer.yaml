@@ -504,6 +504,8 @@ trainer:
   save_freq: -1
   save_freq_offset: 0
   save_steps: null
+  actor_save_steps: null
+  critic_save_steps: null
   save_actor_checkpoint: true
   save_critic_checkpoint: true
   esi_redundant_time: 0

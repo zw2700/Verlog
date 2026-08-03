@@ -119,6 +119,9 @@ def main() -> None:
             "target_tokenizer": tokenizer_name,
             "target_enable_thinking": args.target_enable_thinking,
             "teacher_temperature": args.temperature,
+            "teacher_top_p": args.top_p,
+            "teacher_top_k": args.top_k,
+            "teacher_max_output_tokens": args.max_output_tokens,
         }
         for field, expected in expected_rollout_fields.items():
             observed = {row.get(field) for row in rows if field in row}
@@ -155,6 +158,9 @@ def main() -> None:
                 provider_name=args.provider,
                 model_name=args.model,
                 temperature=args.temperature,
+                top_p=args.top_p,
+                top_k=args.top_k,
+                max_output_tokens=args.max_output_tokens,
                 scenario_index=scenario_index,
                 include_raw_response=args.include_raw_response,
             ): (scenario_seed, sample_index)
@@ -199,6 +205,9 @@ def main() -> None:
             "model": args.model,
             "provider": args.provider,
             "temperature": args.temperature,
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "max_output_tokens": args.max_output_tokens,
             "target_tokenizer": tokenizer_name,
             "env_config": env_config,
             "env_config_hash": expected_config_hash,

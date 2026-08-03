@@ -1,51 +1,53 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=qwen3_sft_eval
-#SBATCH --output=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/qwen3_sft_eval_%j.out
-#SBATCH --error=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/qwen3_sft_eval_%j.err
+#SBATCH --job-name=qwen3_self_rs_collect
+#SBATCH --output=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/qwen3_self_rs_collect_%j.out
+#SBATCH --error=/zfsauton2/home/frankwu2/unscripted/Verlog/logs/qwen3_self_rs_collect_%j.err
 #SBATCH --partition=general
 #SBATCH --qos=qos_general
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=120G
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:a6000:1
 
 set -euo pipefail
-
-if [[ $# -lt 2 ]]; then
-    echo "Usage: sbatch $0 MODEL_PATH EVAL_NAME" >&2
-    echo "Example: EVAL_NUM_SCENARIOS=20 sbatch $0 Qwen/Qwen3-4B base" >&2
-    exit 2
-fi
 
 PROJECT_DIR=/zfsauton2/home/frankwu2/unscripted/Verlog
 ENV_PATH=/zfsauton/scratch/cpulling/conda_envs/verlog
 PYTHON_BIN=${ENV_PATH}/bin/python3
 VLLM_BIN=${ENV_PATH}/bin/vllm
-SWEEP_TAG=${SWEEP_TAG:-haiku_qwen3_sweep_v1}
-EVALUATION_ROOT=${EVALUATION_ROOT:-${PROJECT_DIR}/outputs/sft/evaluations}
-MODEL_PATH=$1
-EVAL_NAME=$2
+
+MODEL_PATH=${MODEL_PATH:-Qwen/Qwen3-4B}
 TARGET_TOKENIZER=${TARGET_TOKENIZER:-Qwen/Qwen3-4B}
-EVAL_NUM_SCENARIOS=${EVAL_NUM_SCENARIOS:-20}
+RUN_TAG=${RUN_TAG:-qwen3_self_rs_v1}
+OUTPUT_ROOT=${OUTPUT_ROOT:-${PROJECT_DIR}/outputs/sft}
+OUTPUT_DIR=${OUTPUT_ROOT}/${RUN_TAG}
+OUTPUT_JSONL=${OUTPUT_JSONL:-${OUTPUT_DIR}/attempts.jsonl}
+SUMMARY_JSON=${SUMMARY_JSON:-${OUTPUT_DIR}/attempts.summary.json}
+SEED_BASE=${SEED_BASE:-10000}
+NUM_SCENARIOS=${NUM_SCENARIOS:-500}
+MAX_ATTEMPTS_PER_SCENARIO=${MAX_ATTEMPTS_PER_SCENARIO:-4}
 NUM_WORKERS=${NUM_WORKERS:-8}
 TEMPERATURE=${TEMPERATURE:-1.0}
 TOP_P=${TOP_P:-1.0}
 TOP_K=${TOP_K:--1}
 MAX_OUTPUT_TOKENS=${MAX_OUTPUT_TOKENS:-512}
+
 VLLM_HOST=127.0.0.1
 VLLM_PORT=${VLLM_PORT:-$((20000 + SLURM_JOB_ID % 20000))}
 VLLM_GPU_MEMORY_UTILIZATION=${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
 VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-8192}
 VLLM_READY_TIMEOUT=${VLLM_READY_TIMEOUT:-900}
+BASE_URL=http://${VLLM_HOST}:${VLLM_PORT}/v1
+VLLM_LOG=${PROJECT_DIR}/logs/vllm_qwen3_self_rs_collect_${SLURM_JOB_ID}.log
 
-if [[ ! ${EVAL_NAME} =~ ^[A-Za-z0-9._-]+$ ]]; then
-    echo "EVAL_NAME may contain only letters, digits, dot, underscore, and dash" >&2
+if [[ ! -x ${PYTHON_BIN} || ! -x ${VLLM_BIN} ]]; then
+    echo "Missing Python or vLLM in ${ENV_PATH}" >&2
     exit 2
 fi
-if (( EVAL_NUM_SCENARIOS <= 0 || EVAL_NUM_SCENARIOS > 500 )); then
-    echo "EVAL_NUM_SCENARIOS must be between 1 and 500" >&2
+if (( NUM_SCENARIOS <= 0 || MAX_ATTEMPTS_PER_SCENARIO <= 0 || NUM_WORKERS <= 0 )); then
+    echo "Scenario, attempt, and worker counts must be positive" >&2
     exit 2
 fi
 if [[ -d ${MODEL_PATH} ]]; then
@@ -55,17 +57,13 @@ elif [[ ${MODEL_PATH} == /* ]]; then
     exit 2
 fi
 
-OUTPUT_DIR=${EVALUATION_ROOT}/${SWEEP_TAG}/${EVAL_NAME}
-OUTPUT_JSONL=${OUTPUT_DIR}/episodes.jsonl
-SUMMARY_JSON=${OUTPUT_DIR}/summary.json
-BASE_URL=http://${VLLM_HOST}:${VLLM_PORT}/v1
-VLLM_LOG=${PROJECT_DIR}/logs/vllm_sft_eval_${SLURM_JOB_ID}.log
-
 cd "${PROJECT_DIR}"
 mkdir -p logs "${OUTPUT_DIR}"
 export PATH=${ENV_PATH}/bin:${PATH}
 export CONDA_PREFIX=${ENV_PATH}
 export HF_HOME=${HF_HOME:-/zfsauton/scratch/frankwu2/.cache/huggingface}
+export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+export TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
 export TMPDIR=${TMPDIR:-/zfsauton/scratch/frankwu2/tmp}
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -78,14 +76,15 @@ export LOCAL_VLLM_DISABLE_THINKING=1
 unset ROCR_VISIBLE_DEVICES
 mkdir -p "${HF_HOME}" "${TMPDIR}"
 
-echo "=== SFT rollout evaluation ==="
+echo "=== Qwen3 rejection-sampling collection ==="
 echo "job_id=${SLURM_JOB_ID} node=${SLURMD_NODENAME}"
 echo "start_time=$(date --iso-8601=seconds)"
-echo "model=${MODEL_PATH} eval_name=${EVAL_NAME}"
-echo "scenarios=${EVAL_NUM_SCENARIOS} seeds=0..$((EVAL_NUM_SCENARIOS - 1))"
-echo "temperature=${TEMPERATURE} top_p=${TOP_P} top_k=${TOP_K} target_tokenizer=${TARGET_TOKENIZER}"
+echo "model=${MODEL_PATH} target_tokenizer=${TARGET_TOKENIZER}"
+echo "scenarios=${NUM_SCENARIOS} seeds=${SEED_BASE}..$((SEED_BASE + NUM_SCENARIOS - 1))"
+echo "max_attempts=${MAX_ATTEMPTS_PER_SCENARIO} workers=${NUM_WORKERS}"
+echo "temperature=${TEMPERATURE} top_p=${TOP_P} top_k=${TOP_K} max_output_tokens=${MAX_OUTPUT_TOKENS}"
 echo "output=${OUTPUT_JSONL}"
-echo "=============================="
+echo "==========================================="
 nvidia-smi -L
 
 VLLM_ARGS=(
@@ -97,11 +96,11 @@ VLLM_ARGS=(
     --max-model-len "${VLLM_MAX_MODEL_LEN}"
     --dtype auto
     --generation-config vllm
+    --disable-log-requests
 )
 echo "Starting vLLM; server log: ${VLLM_LOG}"
 "${VLLM_BIN}" "${VLLM_ARGS[@]}" >"${VLLM_LOG}" 2>&1 &
 VLLM_PID=$!
-export VLLM_PID VLLM_LOG BASE_URL VLLM_READY_TIMEOUT
 
 cleanup() {
     if kill -0 "${VLLM_PID}" >/dev/null 2>&1; then
@@ -111,6 +110,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+export VLLM_PID VLLM_LOG BASE_URL VLLM_READY_TIMEOUT
 "${PYTHON_BIN}" - <<'PY'
 import json
 import os
@@ -147,7 +147,7 @@ if [[ -s ${OUTPUT_JSONL} ]]; then
     RESUME_ARG=(--resume)
 fi
 
-"${PYTHON_BIN}" -m scripts.sft.evaluate_policy \
+"${PYTHON_BIN}" -m scripts.sft.collect_teacher_rollouts \
     --provider local-vllm \
     --model "${MODEL_PATH}" \
     --base-url "${BASE_URL}" \
@@ -157,13 +157,15 @@ fi
     --top-p "${TOP_P}" \
     --top-k "${TOP_K}" \
     --max-output-tokens "${MAX_OUTPUT_TOKENS}" \
+    --seed-base "${SEED_BASE}" \
+    --num-scenarios "${NUM_SCENARIOS}" \
+    --max-attempts-per-scenario "${MAX_ATTEMPTS_PER_SCENARIO}" \
     --num-workers "${NUM_WORKERS}" \
-    --seed-base 0 \
-    --num-scenarios "${EVAL_NUM_SCENARIOS}" \
-    --samples-per-scenario 1 \
+    --stop-on-socially-optimal \
     --output-jsonl "${OUTPUT_JSONL}" \
     --summary-json "${SUMMARY_JSON}" \
     "${RESUME_ARG[@]}"
 
-echo "evaluation_complete=$(date --iso-8601=seconds)"
+echo "collection_complete=$(date --iso-8601=seconds)"
+echo "episodes=${OUTPUT_JSONL}"
 echo "summary=${SUMMARY_JSON}"

@@ -61,6 +61,44 @@ from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seql
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
 
+
+def _is_step_in_save_schedule(configured_steps, global_step: int) -> bool:
+    """Return whether global_step is selected by a list or CLI-style list string."""
+    if configured_steps is None:
+        return False
+    if isinstance(configured_steps, str):
+        configured_steps = [step.strip() for step in configured_steps.strip("[]").split(",") if step.strip()]
+    return global_step in {int(step) for step in configured_steps}
+
+
+def _checkpoint_modules_for_step(
+    trainer_config,
+    global_step: int,
+    *,
+    is_last_step: bool,
+    esi_close_to_expiration: bool,
+    use_critic: bool,
+) -> tuple[bool, bool]:
+    """Select actor/critic checkpoint contents while preserving legacy schedules."""
+    save_freq = trainer_config.get("save_freq", -1)
+    save_freq_offset = trainer_config.get("save_freq_offset", 0)
+    is_shared_save_step = _is_step_in_save_schedule(trainer_config.get("save_steps", None), global_step)
+    is_actor_save_step = _is_step_in_save_schedule(trainer_config.get("actor_save_steps", None), global_step)
+    is_critic_save_step = _is_step_in_save_schedule(trainer_config.get("critic_save_steps", None), global_step)
+    is_save_step = save_freq > 0 and global_step >= save_freq_offset and (
+        global_step - save_freq_offset
+    ) % save_freq == 0
+    is_periodic_save_step = save_freq > 0 and (is_last_step or is_save_step or esi_close_to_expiration)
+
+    save_actor = trainer_config.get("save_actor_checkpoint", True) and (
+        is_shared_save_step or is_actor_save_step or is_periodic_save_step
+    )
+    save_critic = use_critic and trainer_config.get("save_critic_checkpoint", True) and (
+        is_shared_save_step or is_critic_save_step or is_periodic_save_step
+    )
+    return bool(save_actor), bool(save_critic)
+
+
 def get_episode_structure(episode_idx: np.ndarray):
     """
     Given an array of episode indices, return a list of lists,
@@ -910,7 +948,11 @@ class RayPPOTrainer:
                 config=self.config, worker_group=self.actor_rollout_wg, rm_wg=self.rm_wg
             )
 
-    def _save_checkpoint(self):
+    def _save_checkpoint(
+        self,
+        save_actor_checkpoint: Optional[bool] = None,
+        save_critic_checkpoint: Optional[bool] = None,
+    ):
         from verl.utils.fs import local_mkdir_safe
 
         # path: given_path + `/global_step_{global_steps}` + `/actor`
@@ -919,8 +961,14 @@ class RayPPOTrainer:
         )
 
         print(f"local_global_step_folder: {local_global_step_folder}")
-        save_actor_checkpoint = self.config.trainer.get("save_actor_checkpoint", True)
-        save_critic_checkpoint = self.config.trainer.get("save_critic_checkpoint", True)
+        if save_actor_checkpoint is None:
+            save_actor_checkpoint = self.config.trainer.get("save_actor_checkpoint", True)
+        if save_critic_checkpoint is None:
+            save_critic_checkpoint = self.config.trainer.get("save_critic_checkpoint", True)
+        print(
+            "checkpoint modules: "
+            f"actor={save_actor_checkpoint}, critic={self.use_critic and save_critic_checkpoint}"
+        )
 
         remove_previous_ckpt_in_save = self.config.trainer.get("remove_previous_ckpt_in_save", False)
         if remove_previous_ckpt_in_save:
@@ -1407,36 +1455,24 @@ class RayPPOTrainer:
                     max_steps_duration=self.max_steps_duration,
                     redundant_time=self.config.trainer.esi_redundant_time,
                 )
-                # Check if the conditions for saving a checkpoint are met.
-                # The conditions include a mandatory condition (1) and
-                # one of the following optional conditions (2/3/4):
-                # 1. The save frequency is set to a positive value.
-                # 2. It's the last training step.
-                # 3. The current step number matches the save frequency and offset.
-                # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
-                save_freq = self.config.trainer.save_freq
-                save_freq_offset = self.config.trainer.get("save_freq_offset", 0)
-                explicit_save_steps = self.config.trainer.get("save_steps", None)
-                if isinstance(explicit_save_steps, str):
-                    explicit_save_steps = [
-                        step.strip()
-                        for step in explicit_save_steps.strip("[]").split(",")
-                        if step.strip()
-                    ]
-                is_explicit_save_step = (
-                    explicit_save_steps is not None
-                    and self.global_steps in {int(step) for step in explicit_save_steps}
+                # save_steps is the backward-compatible shared schedule. The
+                # module-specific schedules are additive and allow cheap
+                # critic probes without writing a full actor checkpoint.
+                save_actor_checkpoint, save_critic_checkpoint = _checkpoint_modules_for_step(
+                    self.config.trainer,
+                    self.global_steps,
+                    is_last_step=is_last_step,
+                    esi_close_to_expiration=esi_close_to_expiration,
+                    use_critic=self.use_critic,
                 )
-                is_save_step = save_freq > 0 and self.global_steps >= save_freq_offset and (
-                    self.global_steps - save_freq_offset
-                ) % save_freq == 0
-                if is_explicit_save_step or (
-                    save_freq > 0 and (is_last_step or is_save_step or esi_close_to_expiration)
-                ):
+                if save_actor_checkpoint or save_critic_checkpoint:
                     if esi_close_to_expiration:
                         print("Force saving checkpoint: ESI instance expiration approaching.")
                     with marked_timer("save_checkpoint", timing_raw, color="green"):
-                        self._save_checkpoint()
+                        self._save_checkpoint(
+                            save_actor_checkpoint=save_actor_checkpoint,
+                            save_critic_checkpoint=save_critic_checkpoint,
+                        )
 
                 with marked_timer("stop_profile", timing_raw):
                     next_step_profile = (

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -12,9 +13,10 @@ from scripts.sft.build_dataset import (
     choose_validation_scenarios,
     compact_teacher_output,
     episode_sort_key,
+    select_exact_scenario_count,
 )
-from scripts.sft.collect_teacher_rollouts import collection_summary
-from scripts.sft.compare_evaluations import exact_mcnemar_pvalue, paired_primary_report
+from scripts.sft.collect_teacher_rollouts import assert_scenario_fingerprints, collection_summary
+from scripts.sft.compare_evaluations import assert_comparable, exact_mcnemar_pvalue, paired_primary_report
 from scripts.sft.evaluate_policy import summarize_evaluation
 from scripts.sft.make_sweep_datasets import rank_scenarios, subset_scenario_ids
 from scripts.sft.rollout_core import (
@@ -188,6 +190,18 @@ I should keep this concise and invite discussion.
     assert "keep this concise" not in compact
 
 
+def test_compactor_recovers_qwen_underscore_think_typo() -> None:
+    tokenizer = CharacterTokenizer()
+    raw = (
+        "<_THINK>Student 1 has the highest utility, so I should propose it.</THINK>"
+        "<GROUP>I propose Student 1.</GROUP>"
+    )
+    compact = compact_teacher_output(raw, tokenizer, max_think_tokens=256)
+    assert compact.startswith("<THINK>")
+    assert "<_THINK>" not in compact
+    assert compact.endswith("<GROUP>I propose Student 1.</GROUP>")
+
+
 def test_compactor_aligns_student_rationale_with_emitted_vote() -> None:
     tokenizer = CharacterTokenizer()
     raw = """<THINK>
@@ -237,6 +251,15 @@ def test_episode_selection_prefers_shorter_trajectory() -> None:
     longer = make_episode(attempt=0)
     longer["turns"] = longer["turns"] * 2
     assert min([longer, shorter], key=episode_sort_key) is shorter
+
+
+def test_exact_scenario_selection_is_deterministic_and_requires_enough_data() -> None:
+    selected = [(make_episode(seed), [{"seed": seed}]) for seed in range(10)]
+    first = select_exact_scenario_count(selected, count=4, selection_seed=7)
+    second = select_exact_scenario_count(list(reversed(selected)), count=4, selection_seed=7)
+    assert [row[0]["scenario_id"] for row in first] == [row[0]["scenario_id"] for row in second]
+    with pytest.raises(ValueError, match="need 11"):
+        select_exact_scenario_count(selected, count=11, selection_seed=7)
 
 
 def test_fractional_validation_split_is_exact_and_scenario_level() -> None:
@@ -297,6 +320,15 @@ def test_collection_and_evaluation_summaries() -> None:
     assert evaluation["socially_optimal_rate_95ci"][1] > 0.5
 
 
+def test_collection_rejects_changed_scenario_fingerprints() -> None:
+    rows = [
+        {"scenario_seed": 3, "scenario_fingerprint": "first"},
+        {"scenario_seed": 3, "scenario_fingerprint": "second"},
+    ]
+    with pytest.raises(ValueError, match="fingerprint changed"):
+        assert_scenario_fingerprints(rows)
+
+
 def test_paired_evaluation_report_uses_locked_seed_outcomes() -> None:
     baseline = {
         seed: {"socially_optimal": outcome}
@@ -319,6 +351,13 @@ def test_paired_evaluation_report_uses_locked_seed_outcomes() -> None:
     assert exact_mcnemar_pvalue(2, 1) == 1.0
 
 
+def test_paired_comparison_checks_realized_scenario_fingerprints() -> None:
+    baseline = {0: {**make_episode(0), "scenario_fingerprint": "scenario-a"}}
+    candidate = {0: {**make_episode(0), "scenario_fingerprint": "scenario-b"}}
+    with pytest.raises(ValueError, match="realized scenario differs"):
+        assert_comparable({"base": baseline, "candidate": candidate})
+
+
 def test_captured_rollout_uses_target_tokenizer_and_saves_messages() -> None:
     tokenizer = CharacterTokenizer()
     episode = run_captured_episode(
@@ -332,6 +371,9 @@ def test_captured_rollout_uses_target_tokenizer_and_saves_messages() -> None:
         provider_name="fake",
         model_name="fixed-vote",
         temperature=0.0,
+        top_p=1.0,
+        top_k=-1,
+        max_output_tokens=512,
     )
     assert episode["scenario_seed"] == 19
     assert episode["env_config_hash"] == env_config_hash(DEFAULT_ENV_CONFIG)
@@ -341,3 +383,33 @@ def test_captured_rollout_uses_target_tokenizer_and_saves_messages() -> None:
     assert all(turn["messages"][-1]["role"] == "user" for turn in episode["turns"])
     assert all(turn["target_prompt_tokens"] > 0 for turn in episode["turns"])
     assert all(turn["target_response_tokens"] > 0 for turn in episode["turns"])
+    assert episode["teacher_top_p"] == 1.0
+    assert episode["teacher_top_k"] == -1
+    assert episode["scenario_fingerprint"]
+
+
+def test_threaded_rollouts_keep_seeded_scenarios_stable() -> None:
+    tokenizer = CharacterTokenizer()
+
+    def capture(seed: int) -> tuple[int, str]:
+        episode = run_captured_episode(
+            client=FixedVoteClient(),
+            env_config=DEFAULT_ENV_CONFIG,
+            scenario_seed=seed,
+            attempt=0,
+            target_tokenizer=tokenizer,
+            target_tokenizer_name="character-test-tokenizer",
+            target_enable_thinking=False,
+            provider_name="fake",
+            model_name="fixed-vote",
+            temperature=0.0,
+        )
+        return seed, episode["scenario_fingerprint"]
+
+    seeds = [31, 32, 33, 31, 32, 33]
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(capture, seeds))
+    by_seed: dict[int, set[str]] = {}
+    for seed, fingerprint in results:
+        by_seed.setdefault(seed, set()).add(fingerprint)
+    assert all(len(fingerprints) == 1 for fingerprints in by_seed.values())

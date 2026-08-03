@@ -70,7 +70,24 @@ def load_existing_attempts(path: Path) -> tuple[dict[int, set[int]], set[int], l
         attempts[seed].add(attempt)
         if is_clean_socially_optimal(row):
             successful_seeds.add(seed)
+    assert_scenario_fingerprints(rows)
     return attempts, successful_seeds, rows
+
+
+def assert_scenario_fingerprints(rows: list[dict[str, Any]]) -> None:
+    """Reject seeded scenarios whose realized environment changed across attempts."""
+    by_seed: dict[int, set[str]] = {}
+    for row in rows:
+        fingerprint = row.get("scenario_fingerprint")
+        seed = row.get("scenario_seed")
+        if isinstance(seed, int) and fingerprint:
+            by_seed.setdefault(seed, set()).add(str(fingerprint))
+    mismatched = {seed: values for seed, values in by_seed.items() if len(values) > 1}
+    if mismatched:
+        examples = "; ".join(
+            f"seed={seed}: {sorted(values)}" for seed, values in sorted(mismatched.items())[:3]
+        )
+        raise ValueError(f"Scenario fingerprint changed across attempts: {examples}")
 
 
 def collection_summary(rows: list[dict[str, Any]], requested_seeds: list[int]) -> dict[str, Any]:
@@ -122,6 +139,9 @@ def collect_scenario_attempts(
             provider_name=args.provider,
             model_name=args.model,
             temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            max_output_tokens=args.max_output_tokens,
             scenario_index=scenario_index,
             include_raw_response=args.include_raw_response,
         )
@@ -169,6 +189,9 @@ def main() -> None:
             "target_tokenizer": args.target_tokenizer,
             "target_enable_thinking": args.target_enable_thinking,
             "teacher_temperature": args.temperature,
+            "teacher_top_p": args.top_p,
+            "teacher_top_k": args.top_k,
+            "teacher_max_output_tokens": args.max_output_tokens,
         }
         for field, expected in expected_rollout_fields.items():
             observed = {row.get(field) for row in all_rows if field in row}
@@ -228,6 +251,14 @@ def main() -> None:
                 continue
 
             for episode in episodes:
+                assert_scenario_fingerprints(
+                    [
+                        row
+                        for row in all_rows
+                        if row.get("scenario_seed") == episode.get("scenario_seed")
+                    ]
+                    + [episode]
+                )
                 append_jsonl(output_path, episode)
                 all_rows.append(episode)
                 existing_attempts.setdefault(scenario_seed, set()).add(int(episode["attempt"]))
@@ -257,6 +288,10 @@ def main() -> None:
             "env_config": env_config,
             "provider": args.provider,
             "teacher_model": args.model,
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "max_output_tokens": args.max_output_tokens,
             "target_tokenizer": args.target_tokenizer,
             "max_attempts_per_scenario": args.max_attempts_per_scenario,
             "num_workers": args.num_workers,

@@ -24,7 +24,10 @@ from scripts.sft.rollout_core import (
 )
 from verl.envs import hiring_episode_logging as episode_logging
 
-THINK_PATTERN = re.compile(r"<THINK>(.*?)</THINK>", re.DOTALL | re.IGNORECASE)
+# Qwen occasionally emits the unambiguous opening-tag typo <_THINK> while
+# still closing with </THINK>. Accept that typo for compact-target recovery;
+# compact_teacher_output always emits the canonical <THINK> spelling.
+THINK_PATTERN = re.compile(r"<_?THINK>(.*?)</THINK>", re.DOTALL | re.IGNORECASE)
 STUDENT_PATTERN = re.compile(r"\bstudent\s+(\d+)\b", re.IGNORECASE)
 VOTE_PATTERN = re.compile(r"<VOTE>\s*(\d+)\s*</VOTE>", re.IGNORECASE)
 META_THOUGHT_PATTERN = re.compile(
@@ -69,6 +72,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-fraction", type=float, default=0.1)
     parser.add_argument("--validation-seeds-file", default=None)
     parser.add_argument("--split-seed", type=int, default=1)
+    parser.add_argument(
+        "--selected-scenario-count",
+        type=int,
+        default=None,
+        help=(
+            "Require and deterministically select exactly this many clean scenarios. "
+            "Useful for size-matched teacher comparisons."
+        ),
+    )
+    parser.add_argument(
+        "--selection-seed",
+        type=int,
+        default=1,
+        help="Hash-ranking seed used only when --selected-scenario-count truncates clean scenarios.",
+    )
     parser.add_argument("--allow-mixed-env-configs", action="store_true")
     return parser.parse_args()
 
@@ -107,6 +125,28 @@ def episode_sort_key(episode: dict[str, Any]) -> tuple[int, int, int, int]:
         int(episode.get("llm_output_tokens") or 0),
         int(episode.get("attempt") or 0),
     )
+
+
+def select_exact_scenario_count(
+    selected: list[tuple[dict[str, Any], list[dict[str, Any]]]],
+    *,
+    count: int | None,
+    selection_seed: int,
+) -> list[tuple[dict[str, Any], list[dict[str, Any]]]]:
+    """Return a deterministic exact-size subset of already validated scenarios."""
+    if count is None:
+        return selected
+    if count <= 0:
+        raise ValueError("selected scenario count must be positive")
+    if len(selected) < count:
+        raise ValueError(f"Only {len(selected)} clean dataset-valid scenarios are available; need {count}")
+    ranked = sorted(
+        selected,
+        key=lambda item: hashlib.sha256(
+            f"{selection_seed}:{scenario_key(item[0])}".encode("utf-8")
+        ).digest(),
+    )
+    return ranked[:count]
 
 
 def _thought_sentences(thought: str) -> list[str]:
@@ -215,8 +255,9 @@ def _fit_complete_candidate(sentence: str, tokenizer, *, max_tokens: int) -> str
 def compact_teacher_output(output: str, tokenizer, *, max_think_tokens: int) -> str:
     """Keep one or two action-relevant rationales and the original action text.
 
-    Only the final complete THINK block is considered. This avoids concatenating
-    malformed retries or earlier scratch work into the compact target.
+    Only the final complete THINK block is considered. The recoverable opening
+    typo <_THINK> is canonicalized, but incomplete blocks remain invalid. This
+    avoids concatenating malformed retries or earlier scratch work.
     """
     if max_think_tokens <= 0:
         raise DatasetBuildError("max_think_tokens must be positive")
@@ -487,6 +528,16 @@ def main() -> None:
     if not selected:
         raise SystemExit("No scenarios produced valid SFT rows")
 
+    eligible_clean_scenarios = len(selected)
+    try:
+        selected = select_exact_scenario_count(
+            selected,
+            count=args.selected_scenario_count,
+            selection_seed=args.selection_seed,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     validation_seeds = set(load_seed_file(args.validation_seeds_file)) if args.validation_seeds_file else None
     validation_scenarios = choose_validation_scenarios(
         selected,
@@ -529,7 +580,10 @@ def main() -> None:
         "input_files": [str(path) for path in input_paths],
         "input_attempts": len(episodes),
         "input_scenarios": len(grouped),
+        "eligible_clean_scenarios": eligible_clean_scenarios,
         "selected_scenarios": len(selected),
+        "requested_selected_scenarios": args.selected_scenario_count,
+        "selection_seed": args.selection_seed,
         "train_scenarios": sum(item["split"] == "train" for item in selected_manifest),
         "validation_scenarios": sum(item["split"] == "validation" for item in selected_manifest),
         "train_decision_rows": len(train_rows),

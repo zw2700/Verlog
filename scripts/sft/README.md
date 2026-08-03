@@ -2,8 +2,77 @@
 
 This directory is an isolated pipeline for collecting successful Haiku self-play,
 turning it into decision-level SFT examples, training Qwen with VERL, and evaluating
-the resulting policy on locked seeds. It deliberately leaves
-`scripts/rollout_frontier.py` unchanged; only its provider clients are reused.
+the resulting policy on locked seeds. It reuses the provider clients from
+`scripts/rollout_frontier.py`; the only provider change is local-vLLM top-k support.
+
+## Qwen self-rejection-sampling replication
+
+The same infrastructure can train Qwen3-4B on clean socially optimal rollouts
+sampled from the unfine-tuned Qwen3-4B policy. This experiment has its own paths
+and does not modify the Haiku datasets or checkpoints.
+
+Collect 500 training scenarios with up to four attempts each. The launcher starts
+a local vLLM server and explicitly uses the RL sampling policy: temperature 1,
+top-p 1, top-k -1, no chat-template thinking, and at most 512 output tokens.
+
+```bash
+sbatch scripts/sft/collect_self_rollouts.sbatch
+```
+
+The output summary is
+`outputs/sft/qwen3_self_rs_v1/attempts.summary.json`. We want at least 375 clean
+successful scenarios before selecting 351. If the four-attempt run falls short,
+resume only the unresolved scenarios with four additional attempts:
+
+```bash
+MAX_ATTEMPTS_PER_SCENARIO=8 sbatch scripts/sft/collect_self_rollouts.sbatch
+```
+
+If eight attempts still produce fewer than 351 usable scenarios, extend the same
+artifact to 600 seeds:
+
+```bash
+NUM_SCENARIOS=600 MAX_ATTEMPTS_PER_SCENARIO=8 \
+  sbatch scripts/sft/collect_self_rollouts.sbatch
+```
+
+After collection, build exactly 351 selected trajectories (316 train and 35
+validation), plus nested raw25/raw50/raw100 and compact100 arms. This is a CPU
+step and normally runs directly on the login/CPU host:
+
+```bash
+bash scripts/sft/build_self_rs_datasets.sh
+```
+
+The builder selects the shortest clean success per scenario, hash-ranks excess
+successful scenarios, refuses to proceed with fewer than 351, and writes an
+overlap report against the Haiku scenario set. The sweep lives at
+`outputs/sft/qwen3_self_rs_v1/sweep_datasets_v1`.
+
+Train the four arms sequentially on four A6000s:
+
+```bash
+sbatch scripts/sft/train_self_rs_sweep.sbatch
+```
+
+The arms use the same fixed exposure as the Haiku sweep: raw25 step 7, raw50
+step 16, raw100 steps 8/16/32 along one 32-step cosine-schedule trajectory, and
+compact100 step 32. Fixed steps are intentional because Qwen's successful
+trajectories may contain more decision rows than Haiku's.
+
+Merge all six evaluation checkpoints with one array submission:
+
+```bash
+sbatch scripts/sft/merge_self_rs_sweep.sbatch
+```
+
+Then reuse the existing evaluation array under the self-RS tag:
+
+```bash
+MODEL_ROOT=/zfsauton/scratch/frankwu2/unscripted/Verlog/models/sft/qwen3_self_rs_sweep_v1 \
+SWEEP_TAG=qwen3_self_rs_sweep_v1 NUM_SCENARIOS=20 \
+  sbatch scripts/sft/evaluate_sweep.sbatch
+```
 
 ## Experimental unit
 

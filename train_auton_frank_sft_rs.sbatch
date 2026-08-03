@@ -23,7 +23,8 @@ set -euo pipefail
 # ============================================================================
 
 EXP_NOTES=(
-    "Model: Qwen3-4B initialized from the merged Haiku-SFT raw100 step-16 checkpoint; user-selected for RL despite the matched 500-seed RL-decoding evaluation (45.0% socially optimal, 85.4% valid episodes, 1,505 mean output tokens)."
+    "Model: Qwen3-4B initialized from the merged Qwen self-rejection-sampled SFT raw100 step-16 checkpoint (316 training scenarios / 1,809 decision turns)."
+    "Locked 500-seed RL-decoding evaluation: 46.6% socially optimal and 99.2% valid episodes versus 45.0% SO for base (+1.6 pp; paired 95% CI -2.6 to +5.8 pp); user-selected for exploratory RL."
     "Environment and objective settings match train_auton_frank.sbatch (no termination on all-voted-no consensus, random-permutation professor preferences)."
     "Episode jsonl sharded per worker"
     "Critic model-only snapshots saved at steps 1, 5, 10, 30, and 75; the actor model, optimizer, and extra state are saved at steps 30 and 75."
@@ -334,7 +335,7 @@ export VERL_PROFILE_AGENT_LOOP="${VERL_PROFILE_AGENT_LOOP:-1}"
 # ============================================================================
 
 NUM_ENVS=32
-MODEL_PATH="${MODEL_PATH:-/zfsauton/scratch/frankwu2/unscripted/Verlog/models/sft/haiku_qwen3_sweep_v1/raw100_step16}"
+MODEL_PATH="${MODEL_PATH:-/zfsauton/scratch/frankwu2/unscripted/Verlog/models/sft/qwen3_self_rs_sweep_v1/raw100_step16}"
 ENABLE_THINKING="${ENABLE_THINKING:-false}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
 VAL_BEFORE_TRAIN="${VAL_BEFORE_TRAIN:-false}"

@@ -184,6 +184,11 @@ trainer:
   # Set save_freq=-1 with save_steps=[...] for sparse probe checkpoints only.
   save_steps: null
 
+  # Optional module-specific checkpoint steps. These are additive with save_steps
+  # and the periodic save_freq schedule.
+  actor_save_steps: null
+  critic_save_steps: null
+
   # Select which trainable modules to write when saving checkpoints.
   save_actor_checkpoint: True
   save_critic_checkpoint: True

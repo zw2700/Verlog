@@ -376,6 +376,9 @@ def make_client(args: argparse.Namespace) -> BaseClient:
 
     if args.provider == "local-vllm":
         extra_body = _json_env("LOCAL_VLLM_EXTRA_BODY_JSON")
+        top_k = getattr(args, "top_k", None)
+        if top_k is not None:
+            extra_body["top_k"] = top_k
         if _env_flag("LOCAL_VLLM_DISABLE_THINKING", default=False):
             chat_template_kwargs = dict(extra_body.get("chat_template_kwargs") or {})
             chat_template_kwargs["enable_thinking"] = False

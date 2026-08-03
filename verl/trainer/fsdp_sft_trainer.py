@@ -330,6 +330,10 @@ class FSDPSFTTrainer:
 
         self.steps_per_epoch = len(self.train_dataloader)
         self.total_steps = self.steps_per_epoch * self.config.trainer.total_epochs
+        if self.config.trainer.total_training_steps is not None:
+            self.total_steps = int(self.config.trainer.total_training_steps)
+            if self.total_steps <= 0:
+                raise ValueError("trainer.total_training_steps must be positive when set")
 
         if self.device_mesh.get_rank() == 0:
             print(

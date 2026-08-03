@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,11 @@ DEFAULT_SFT_ENV_PATH = Path(__file__).with_name("sft.env")
 TRUNCATION_FINISH_REASONS = {"length", "max_tokens", "max_output_tokens"}
 ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# AsyncTickerAdmissionsEnv seeds NumPy's process-global RNG in __init__ and
+# consumes that RNG in reset(). Keep the pair atomic so threaded rollout
+# workers cannot silently change another episode's seeded scenario.
+_ENV_RESET_LOCK = threading.Lock()
+
 
 def utc_timestamp() -> str:
     """Return the timestamp format expected by hiring_episode_logging."""
@@ -69,6 +75,16 @@ def env_config_hash(config: dict[str, Any]) -> str:
 
 def make_scenario_id(config_hash: str, scenario_seed: int) -> str:
     return f"{config_hash}:seed{scenario_seed}"
+
+
+def scenario_fingerprint(env: AsyncTickerAdmissionsEnv) -> str:
+    """Hash the seeded, realized scenario independently of model actions."""
+    payload = {
+        "professor_interests": env.professor_interests,
+        "student_batch": env.student_batch,
+        "tiebreak_order": getattr(env, "_episode_tiebreak_order", None),
+    }
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
 def load_json_object(value: str | Path | None) -> dict[str, Any]:
@@ -239,6 +255,9 @@ def run_captured_episode(
     provider_name: str,
     model_name: str,
     temperature: float,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    max_output_tokens: int | None = None,
     scenario_index: int = 0,
     include_raw_response: bool = False,
 ) -> dict[str, Any]:
@@ -246,8 +265,10 @@ def run_captured_episode(
     config = copy.deepcopy(env_config)
     config_hash = env_config_hash(config)
     scenario_id = make_scenario_id(config_hash, scenario_seed)
-    env = AsyncTickerAdmissionsEnv({**config, "seed": scenario_seed}, tokenizer=target_tokenizer)
-    messages, info = env.reset()
+    with _ENV_RESET_LOCK:
+        env = AsyncTickerAdmissionsEnv({**config, "seed": scenario_seed}, tokenizer=target_tokenizer)
+        messages, info = env.reset()
+        realized_scenario_hash = scenario_fingerprint(env)
     flat_info = flatten_info(info)
     agent_id = flat_info.get("active_agent")
 
@@ -332,7 +353,7 @@ def run_captured_episode(
     )
     row.update(
         {
-            "sft_rollout_schema_version": 1,
+            "sft_rollout_schema_version": 2,
             "scenario_seed": scenario_seed,
             "scenario_index": scenario_index,
             "scenario_id": scenario_id,
@@ -340,9 +361,13 @@ def run_captured_episode(
             "episode_uid": f"{scenario_id}:attempt{attempt}",
             "env_config": episode_logging.json_safe(config),
             "env_config_hash": config_hash,
+            "scenario_fingerprint": realized_scenario_hash,
             "provider": provider_name,
             "teacher_model": model_name,
             "teacher_temperature": temperature,
+            "teacher_top_p": top_p,
+            "teacher_top_k": top_k,
+            "teacher_max_output_tokens": max_output_tokens,
             "target_tokenizer": target_tokenizer_name,
             "target_enable_thinking": target_enable_thinking,
             "elapsed_sec": time.time() - start_wall,
@@ -432,6 +457,12 @@ def add_provider_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api-key-env", default=None)
     parser.add_argument("--temperature", type=float, default=float(os.environ.get("TEMPERATURE", "1.0")))
     parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Top-k sampling for providers that support it, including local vLLM.",
+    )
     parser.add_argument("--max-output-tokens", type=int, default=int(os.environ.get("MAX_OUTPUT_TOKENS", "512")))
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--max-retries", type=int, default=5)
@@ -479,6 +510,7 @@ __all__ = [
     "load_target_tokenizer",
     "make_client",
     "make_scenario_id",
+    "scenario_fingerprint",
     "resolve_seeds",
     "run_captured_episode",
     "wilson_interval",

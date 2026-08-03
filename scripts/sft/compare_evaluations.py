@@ -188,7 +188,14 @@ def assert_comparable(all_rows: dict[str, dict[int, dict[str, Any]]]) -> None:
     for label, seeds in seed_sets.items():
         if seeds != first_seeds:
             raise ValueError(f"seed set for {label} differs from {first_label}")
-    for field in ("env_config_hash", "target_tokenizer", "teacher_temperature"):
+    for field in (
+        "env_config_hash",
+        "target_tokenizer",
+        "teacher_temperature",
+        "teacher_top_p",
+        "teacher_top_k",
+        "teacher_max_output_tokens",
+    ):
         observed = {
             label: {row.get(field) for row in rows.values()}
             for label, rows in all_rows.items()
@@ -197,6 +204,24 @@ def assert_comparable(all_rows: dict[str, dict[int, dict[str, Any]]]) -> None:
         across_run_mismatch = len({next(iter(values)) for values in observed.values()}) != 1
         if within_run_mismatch or across_run_mismatch:
             raise ValueError(f"evaluations are not comparable on {field}: {observed}")
+
+    fingerprint_presence = {
+        label: all(bool(row.get("scenario_fingerprint")) for row in rows.values())
+        for label, rows in all_rows.items()
+    }
+    if any(fingerprint_presence.values()) and not all(fingerprint_presence.values()):
+        raise ValueError(
+            "scenario fingerprints are present for only some evaluations; rerun legacy evaluations "
+            f"before treating them as paired: {fingerprint_presence}"
+        )
+    if all(fingerprint_presence.values()):
+        for seed in first_seeds:
+            fingerprints = {
+                label: str(rows[seed]["scenario_fingerprint"])
+                for label, rows in all_rows.items()
+            }
+            if len(set(fingerprints.values())) != 1:
+                raise ValueError(f"realized scenario differs for seed {seed}: {fingerprints}")
 
 
 def markdown_report(report: dict[str, Any]) -> str:
