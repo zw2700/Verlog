@@ -1,8 +1,0 @@
-experiment,scenario,count,probability
-single,all_three_share_top,3229,0.03229
-single,only_prof_1_prof_2_share_top,13160,0.1316
-single,only_prof_1_prof_3_share_top,13277,0.13277
-single,only_prof_2_prof_3_share_top,13244,0.13244
-single,no_pair_shares_top,56587,0.56587
-single,multi_pair_without_all_three_common_top,503,0.00503
-single,malformed_or_missing_preferences,0,0.0

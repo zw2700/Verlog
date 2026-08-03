@@ -137,3 +137,6 @@ monitor/_monitor-settings.json
 
 # local git workflow notes
 GIT_GUIDELINE.md
+
+# ignore analysis from git
+analysis/

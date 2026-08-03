@@ -1,6 +1,0 @@
-scenario,episodes,percent,category_counts,consensus_rate,socially_optimal_rate,socially_optimal_given_consensus_rate,avg_social_welfare_efficiency,avg_tokens_used,avg_total_turns
-all_three_share_top,9,0.09,instant_decision=9,1.0,1.0,1.0,1.0,23.77777777777778,2.0
-only_prof_1_prof_2_share_top,18,0.18,"instant_decision=16, negotiation=2",1.0,0.7222222222222222,0.7222222222222222,0.9869426800454141,52.333333333333336,2.5
-only_prof_1_prof_3_share_top,21,0.21,"instant_decision=2, negotiation=19",1.0,0.9047619047619048,0.9047619047619048,0.9890977443609023,75.71428571428571,3.0476190476190474
-only_prof_2_prof_3_share_top,17,0.17,"instant_decision=1, negotiation=16",1.0,1.0,1.0,1.0,73.0,3.2941176470588234
-no_pair_shares_top,35,0.35,negotiation=35,0.9714285714285714,0.4,0.4117647058823529,0.9202279550336909,247.25714285714287,9.857142857142858
