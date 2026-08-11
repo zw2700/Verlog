@@ -1,98 +1,128 @@
-# Composable configs + thin sbatch for auton runs
+# Rhea training standard
 
-**Goal:** stop copy-pasting the ~80-line wall of `key=value` overrides that lived
-inside `train_auton_frank.sbatch`. Verl already runs on **Hydra**, so every one of
-those `algorithm.adv_estimator=gae ...` args was a Hydra override. We move them
-into a composable config and shrink the sbatch to resource requests + env setup.
+All project training on Rhea must use `slurm/train_auton.sbatch`. Training
+behavior lives in `configs/train_auton.yaml`; the sbatch file owns only Slurm
+resources, private environment setup, and the single training invocation.
+
+Do not create copied sbatch launchers or alternate cluster entrypoints. Express
+experiment changes as Hydra overrides after the canonical launcher path so the
+resolved values are captured in W&B.
 
 ## Layout
 
-```
+```text
 configs/
-  train_auton.yaml            # experiment: composes ppo_trainer + env + all overrides
-  env/auton_admissions.yaml   # env config group (num_envs, env_config.*)
-  hydra/launcher/slurm.yaml   # optional: Submitit launcher (no-sbatch path)
+  train_auton.yaml                 # canonical training configuration
+  env/auton_admissions.yaml        # hiring environment configuration
+  checkpointing/critic_only.yaml   # optional sparse critic checkpoints
 slurm/
-  common.sh                   # sourced env setup + Ray cleanup (was inline in the sbatch)
-  train_auton.sbatch          # thin wrapper: SBATCH directives + one launch
-  auton.env.example           # copy to auton.env; site paths + WANDB_API_KEY
+  common.sh                   # private env, GPU, CPU, cache, and Ray setup
+  train_auton.sbatch          # only supported Rhea training entrypoint
+  auton.env.example           # template for private site configuration
 ```
 
-## One-time setup
+## One-time Rhea setup
+
+From the project checkout under `/zfsauton/scratch/$USER`:
 
 ```bash
-cp slurm/auton.env.example slurm/auton.env   # then edit ENV_PATH, DATA_DIR, WANDB_API_KEY
+install -m 600 slurm/auton.env.example slurm/auton.env
 ```
 
-`slurm/auton.env` is git-ignored (it holds secrets). Site paths stay out of the
-committed sbatch and config.
+Review `ENV_PATH`, `DATA_DIR`, and `MODEL_PATH` in `slurm/auton.env` before the
+first submission. The file is git-ignored and must remain private.
 
-## Everyday use
+Authenticate W&B once with `wandb login`, which writes the standard
+`~/.netrc` entry. `WANDB_API_KEY` in `slurm/auton.env` is only needed when that
+login state is unavailable. Runs use W&B project `unscripted` and the active
+user's entity unless `WANDB_ENTITY` is explicitly set.
+
+## Submit runs
+
+Submit the baseline from the repository root:
 
 ```bash
-# Baseline run — nothing to edit:
 sbatch slurm/train_auton.sbatch
-
-# Override any config value on the CLI (Hydra syntax); args flow through "$@":
-sbatch slurm/train_auton.sbatch envs.env_config.students_per_batch=7 trainer.total_training_steps=100
-
-# Add a brand-new key not in the schema — use the Hydra `+` prefix:
-sbatch slurm/train_auton.sbatch +envs.env_config.some_new_flag=true
 ```
 
-To make a variant permanent, add a small config that composes over this one
-(e.g. `configs/train_auton_smoke.yaml` with `defaults: [train_auton, _self_]` and
-a few overrides) and run `EXP=train_auton_smoke sbatch slurm/train_auton.sbatch`.
+For an experiment, pass a descriptive `tag` and the matching Hydra override:
 
-## Sweeps — two paths
+```bash
+sbatch slurm/train_auton.sbatch \
+  tag=students7 \
+  envs.env_config.students_per_batch=7
+```
 
-### 1. Loop of sbatch jobs (recommended, robust)
+The run name is `unscripted_auton_<tag>_<jobid>`. The complete resolved Hydra
+configuration is stored in W&B, so the tag and override must describe the same
+change. Use Hydra's `+` prefix only when adding a key that is not in the schema.
 
-Each config runs as its own Slurm allocation. Simple, and it reuses the thin
-sbatch and `common.sh` exactly as-is:
+Examples:
+
+```bash
+sbatch slurm/train_auton.sbatch \
+  tag=noconsensus \
+  envs.env_config.terminate_on_all_voted_no_consensus=false
+
+sbatch slurm/train_auton.sbatch \
+  tag=profs5 \
+  envs.env_config.professor_ids='["prof_1","prof_2","prof_3","prof_4","prof_5"]'
+```
+
+Keep one experimental change per job unless the experiment explicitly requires
+a coupled intervention.
+
+Dynamic token batching and the `repeat=10`, `divide=1` critic warmup safeguards
+are baseline settings in `configs/train_auton.yaml`. To additionally save sparse
+critic-model-only snapshots at steps 1, 5, 10, 30, and 75, compose the optional
+checkpointing policy:
+
+```bash
+sbatch slurm/train_auton.sbatch tag=critic-only +checkpointing=critic_only
+```
+
+This produces `unscripted_auton_critic-only_<jobid>`. These checkpoints omit the
+actor, optimizer, and trainer state and therefore cannot resume training. Add a
+direct Hydra override after the policy only when intentionally changing one of
+its values.
+
+## Sweeps
+
+Submit each sweep cell as an independent canonical Slurm job:
 
 ```bash
 for s in 3 5 7; do
   sbatch slurm/train_auton.sbatch \
-    envs.env_config.students_per_batch=$s \
-    trainer.experiment_name=auton_students_$s
+    tag=students$s \
+    envs.env_config.students_per_batch=$s
 done
 ```
 
-### 2. Hydra `--multirun` + Submitit launcher (no sbatch)
+This keeps every allocation, resolved config, W&B run, and failure independent.
 
-`pip install hydra-submitit-launcher`, then Hydra submits one Slurm job per
-sweep cell for you:
+## Runtime guarantees
 
-```bash
-python -m verl.trainer.main_ppo --config-name=train_auton --multirun \
-    hydra/launcher=slurm \
-    envs.env_config.students_per_batch=3,5,7
-```
+`slurm/common.sh`:
 
-Trade-off: cleaner sweep syntax, but the Ray/GPU/vLLM setup that `common.sh` does
-must run *inside* the job. `configs/hydra/launcher/slurm.yaml` wires that via the
-launcher's `setup:` hook. This path is more experimental here — validate a single
-cell before launching a large grid. For most sweeps, path 1 is less fiddly.
+- loads `slurm/auton.env` before validating required paths;
+- preserves the GPU list assigned by Slurm;
+- requeues allocations whose GPUs span NUMA sockets, excluding each fragmented
+  node, unless `ALLOW_SPLIT_GPUS=1` is explicitly configured;
+- derives `trainer.n_gpus_per_node` from the allocation;
+- passes `SLURM_CPUS_PER_TASK` to `ray.init()`;
+- creates job-scoped temporary and Ray directories;
+- never stops or deletes Ray state belonging to another job;
+- accepts standard W&B login state or `WANDB_API_KEY`.
+- writes checkpoints under `CHECKPOINT_ROOT` when configured, otherwise under
+  the project checkout.
 
-> Note on Hydra multirun *within a single process* (`-m` without a Slurm
-> launcher): Verl grabs a whole node's GPUs and Ray for each run, so sequential
-> in-process multirun works but gives you no parallelism. Prefer one Slurm job
-> per config (either path above).
+The launcher writes Slurm output to `logs/auton_<jobid>.out` and
+`logs/auton_<jobid>.err`. Training logs and artifacts remain under the shared
+project checkout and configured scratch paths.
 
-## Does Ray/Verl already cover sweeps?
+## Required review
 
-No. Verl is one training run per `main_ppo` invocation; it uses Ray internally
-for actor/rollout placement, not for hyperparameter search. The sweep/run-
-management layer is exactly what Hydra provides here.
-
-## Migration / validation notes
-
-- `configs/train_auton.yaml` is behavior-preserving vs. `train_auton_frank.sbatch`:
-  it composes over `ppo_trainer` (not `gsm8k_multiturn_grpo`) because the only
-  settings that base contributed and Frank didn't already override were
-  `hybrid_engine` and the `multi_turn` block — both inlined.
-- Composition was validated with `hydra.compose` (all former CLI overrides
-  resolve to the same values, including `agent.num_workers` interpolated from
-  `envs.num_envs`). Still smoke-test one real run on the cluster before deleting
-  the old sbatch — keep `train_auton_frank.sbatch` around until then.
+Before submitting a production run, verify the branch, private paths, model,
+dataset, requested Slurm resources, `tag`, and Hydra overrides. Changes to the
+default model, allocation shape, or training length require explicit review;
+they must not be hidden in a copied launcher.

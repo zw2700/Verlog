@@ -10,7 +10,6 @@ num_envs: 32
 env_name: async_ticker_admissions
 
 # Everything under env_config is passed through to the env constructor.
-# (In Frank's sbatch these were the `+envs.env_config.*` additions.)
 env_config:
   professor_ids: ["prof_1", "prof_2", "prof_3"]
   students_per_batch: 5
