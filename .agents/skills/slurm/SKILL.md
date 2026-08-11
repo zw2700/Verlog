@@ -113,8 +113,8 @@ ssh rhea 'hostname; id -un; df -h /zfsauton /zfsauton2 2>/dev/null || true; ls -
 
 - Never print tokens, `.env` contents, `WANDB_API_KEY`, `.wandb_key`, `.netrc`, or `secrets.env`.
 - Do not use TACC/Vista commands, accounts, queues, or paths for this repo.
-- Do not edit historical launchers unless the user explicitly asks; create project-owned launchers for new runs.
-- Do not print the W&B token embedded in existing launcher files. For new launchers, prefer sourcing secrets from a private env/key file instead of adding literal tokens.
+- Do not create, copy, or extend alternate project launchers. Use `slurm/train_auton.sbatch` with explicit Hydra overrides.
+- Do not inspect, print, or propagate credentials from runtime files. Keep optional secrets in the private `slurm/auton.env`.
 - Do not set up or run this project on non-Slurm Auton machines; this project uses Rhea/Auton Slurm only.
 - Do not kill processes on shared machines unless the user asked and you have identified that the process belongs to the user or the current job.
 - Use `--gres=gpu:gpu_model:number` rather than pinning `--nodelist` unless the user explicitly needs a specific node.
@@ -227,35 +227,42 @@ VERL seed dataset: /zfsauton/scratch/cpulling/data/gsm8k
 model default: Qwen/Qwen3-4B
 W&B entity: active user W&B entity, or explicit WANDB_ENTITY
 W&B project: unscripted
-W&B run name: unscripted_auton_${SLURM_JOB_ID}
+W&B run name: unscripted_auton_base_${SLURM_JOB_ID}
 training length: trainer.total_training_steps=75
 ```
 
-For launchers, use the sanitized skill asset:
+All project training runs must use the canonical launcher:
 
 ```text
-.agents/skills/slurm/assets/train_auton_unscripted_example.sbatch
+slurm/train_auton.sbatch
 ```
 
-It keeps the working Rhea runtime shape, points W&B at project `unscripted` under the active user entity, and avoids embedding a literal W&B token. Use it as the starting point for new project-owned sbatch files.
+Configure private paths and optional secrets in the git-ignored `slurm/auton.env`; install it from `slurm/auton.env.example` and verify the values before submitting. The launcher preserves Slurm's `CUDA_VISIBLE_DEVICES`, passes `SLURM_CPUS_PER_TASK` explicitly to Ray, and isolates Ray temporary state by job. Do not run global `ray stop`, `pkill`, or `/tmp/ray` cleanup from a shared-node launcher because another allocation owned by the same user may be active on that node.
 
-Useful submit-time overrides supported by the launcher include:
+This is the only supported Rhea training entrypoint. Put experiment changes in Hydra overrides after the launcher path; do not create copied sbatch files or alternate submission paths.
+
+Environment overrides read by the canonical config include:
 
 ```bash
-WANDB_PROJECT_NAME=unscripted
 # Optional: export WANDB_ENTITY=your-wandb-entity
 MODEL_PATH=Qwen/Qwen3-4B
 ENABLE_THINKING=false
 VAL_BATCH_SIZE=64
 VAL_BEFORE_TRAIN=false
-STUDENTS_PER_BATCH=5
-TERMINATE_ON_ALL_VOTED_NO_CONSENSUS=false
-PROFESSOR_PREFERENCE_MODE=random_permutation
-PREFERENCE_CORRELATION_THRESHOLD=0.0
-PREFERENCE_REJECTION_MAX_ATTEMPTS=1000
 ```
 
-The launcher writes project logs under `logs/agent_model_train_auton_${SLURM_JOB_ID}.log`, `logs/episode_log_train_auton_${SLURM_JOB_ID}.jsonl`, and `logs/game_log_train_auton_${SLURM_JOB_ID}.log`.
+Pass experiment and environment changes as Hydra overrides after the sbatch path:
+
+```bash
+sbatch slurm/train_auton.sbatch \
+  tag=students7 \
+  envs.env_config.students_per_batch=7 \
+  envs.env_config.terminate_on_all_voted_no_consensus=false \
+  envs.env_config.professor_preference_mode=random_permutation \
+  trainer.total_training_steps=75
+```
+
+The launcher writes project logs under `logs/agent_model_${SLURM_JOB_ID}.log`, `logs/episode_log_${SLURM_JOB_ID}.jsonl`, and `logs/game_log_${SLURM_JOB_ID}.log`.
 
 Submit an existing, reviewed launcher:
 
@@ -370,7 +377,7 @@ For VSCode, connect to the assigned node directly over SSH after Slurm allocates
 2. Confirm the project repo, runtime env, and seed dataset paths. Prefer the project checkout and high-volume outputs under `/zfsauton/scratch`.
 3. Submit only from Rhea with `sbatch`; validate compute-node behavior with a short `debug` allocation.
 4. Keep launchers and logs in the shared repo path so Rhea and allocated nodes see the same files.
-5. Start project-owned launchers from `.agents/skills/slurm/assets/train_auton_unscripted_example.sbatch` and adapt paths deliberately.
+5. Run every project training job through `slurm/train_auton.sbatch`, with private site configuration in `slurm/auton.env` and experiment changes expressed as Hydra overrides.
 
 ## Reporting Back
 
