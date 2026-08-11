@@ -138,6 +138,14 @@ monitor/_monitor-settings.json
 
 # local git workflow notes
 GIT_GUIDELINE.md
+
+# local analysis artifacts
+analysis/
+critic_analysis/
+
+# local SFT credentials
+scripts/sft/sft.env
+
 # site-specific slurm config + secrets
 slurm/auton.env
 
