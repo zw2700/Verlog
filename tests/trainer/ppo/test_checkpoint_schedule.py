@@ -12,9 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
+import json
 
-from verl.trainer.ppo.ray_trainer import _checkpoint_modules_for_step, _is_step_in_save_schedule
+import pytest
+import torch
+
+from verl import DataProto
+from verl.trainer.ppo.ray_trainer import (
+    _append_replay_sample_trace,
+    _checkpoint_modules_for_step,
+    _is_step_in_save_schedule,
+)
 
 
 @pytest.mark.parametrize(
@@ -88,3 +96,29 @@ def test_periodic_schedule_still_saves_both_modules():
         esi_close_to_expiration=False,
         use_critic=True,
     ) == (True, True)
+
+
+def test_replay_sample_trace_records_exact_ids_and_channels(tmp_path):
+    replay_batch = DataProto.from_dict(
+        tensors={
+            "replay_row_id": torch.tensor([9, 3, 12]),
+            "replay_collection_step": torch.tensor([1, 2, 2]),
+            "replay_is_warmup": torch.tensor([True, False, False]),
+            "replay_is_prioritized": torch.tensor([True, False, True]),
+            "replay_mean_raw_advantage": torch.tensor([0.1, -0.2, 0.3]),
+            "replay_mean_return": torch.tensor([1.0, 0.0, 2.0]),
+        }
+    )
+    trace_path = tmp_path / "nested" / "trace.jsonl"
+
+    _append_replay_sample_trace(str(trace_path), 11, "recency_advantage_return", replay_batch)
+    record = json.loads(trace_path.read_text())
+
+    assert record["format_version"] == 1
+    assert record["global_step"] == 11
+    assert record["sampler"] == "recency_advantage_return"
+    assert record["sampled_row_ids"] == [9, 3, 12]
+    assert record["prioritized_row_ids"] == [9, 12]
+    assert record["uniform_row_ids"] == [3]
+    assert record["collection_steps"] == [1, 2, 2]
+    assert record["is_warmup"] == [True, False, False]

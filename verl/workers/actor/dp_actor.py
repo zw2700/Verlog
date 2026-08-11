@@ -438,6 +438,8 @@ class DataParallelPPOActor(BasePPOActor):
         ]
         if self.config.use_kl_loss:
             select_keys.append("ref_log_prob")
+        if "is_replay" in data.batch.keys():
+            select_keys.append("is_replay")
         # Include pre-computed IS weights if present in batch
         # Weights are computed centrally in trainer and added to batch when algorithm.rollout_is=True
         if "rollout_is_weights" in data.batch.keys():
@@ -447,23 +449,32 @@ class DataParallelPPOActor(BasePPOActor):
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
+        has_source_labels = "is_replay" in data.batch
+        source_metric_totals = {
+            source: {
+                "token_count": 0.0,
+                "approx_kl_numerator": 0.0,
+                "clipfrac_numerator": 0.0,
+                "ratio_mean_numerator": 0.0,
+            }
+            for source in ("online", "replay")
+        }
 
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
 
-        on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
+        has_replay = "is_replay" in data.batch and bool(data.batch["is_replay"].any())
+        on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1 and not has_replay
 
         metrics = {}
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
+                actual_mini_batch_size = len(mini_batch)
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
                     micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
                 else:
-                    self.gradient_accumulation = (
-                        self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
-                    )
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
 
                 self.actor_optimizer.zero_grad()
@@ -480,9 +491,9 @@ class DataParallelPPOActor(BasePPOActor):
                     loss_agg_mode = self.config.loss_agg_mode
 
                     if self.config.use_dynamic_bsz:
-                        loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
+                        loss_scale_factor = response_mask.shape[0] / actual_mini_batch_size
                     else:
-                        loss_scale_factor = 1 / self.gradient_accumulation
+                        loss_scale_factor = response_mask.shape[0] / actual_mini_batch_size
 
                     # all return: (bsz, response_length)
                     calculate_entropy = False
@@ -572,15 +583,110 @@ class DataParallelPPOActor(BasePPOActor):
                             **off_policy_metrics,
                         }
                     )
+
+                    if has_source_labels:
+                        with torch.no_grad():
+                            log_ratio = log_prob - old_log_prob
+                            ratio = torch.exp(log_ratio)
+                            clip_low = 1.0 - clip_ratio_low
+                            clip_high = 1.0 + clip_ratio_high
+                            approximate_kl = (ratio - 1.0) - log_ratio
+                            clipped = ((ratio < clip_low) | (ratio > clip_high)).to(response_mask.dtype)
+                            for source_name, source_rows in (
+                                ("replay", model_inputs["is_replay"].bool()),
+                                ("online", ~model_inputs["is_replay"].bool()),
+                            ):
+                                source_mask = response_mask * source_rows.unsqueeze(-1)
+                                source_metric_totals[source_name]["token_count"] += source_mask.sum()
+                                source_metric_totals[source_name]["approx_kl_numerator"] += (
+                                    approximate_kl.float() * source_mask
+                                ).sum()
+                                source_metric_totals[source_name]["clipfrac_numerator"] += (
+                                    clipped * source_mask
+                                ).sum()
+                                source_metric_totals[source_name]["ratio_mean_numerator"] += (
+                                    ratio.float() * source_mask
+                                ).sum()
                     append_to_dict(metrics, micro_batch_metrics)
 
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
+        if has_source_labels:
+            source_metrics = {}
+            for source_name, totals in source_metric_totals.items():
+                for metric_name, total in totals.items():
+                    source_metrics[f"actor/{source_name}_{metric_name}"] = float(total.item())
+            append_to_dict(metrics, source_metrics)
         self.actor_optimizer.zero_grad()
         
         # Compute off-policy metrics
         off_policy_metrics = compute_off_policy_metrics2(metrics)
         metrics.update(off_policy_metrics)
         
+        return metrics
+
+    @GPUMemoryLogger(role="dp actor sft", logger=logger)
+    def update_sft(self, data: DataProto):
+        """Run one supervised optimizer step over replay responses."""
+        self.actor_module.train()
+        select_keys = ["responses", "response_mask", "input_ids", "attention_mask", "position_ids"]
+        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
+        non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
+        data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
+        if len(data) == 0:
+            raise ValueError("interleaved SFT received an empty batch")
+
+        if self.config.use_dynamic_bsz:
+            max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+            micro_batches, _ = prepare_dynamic_batch(data, max_token_len=max_token_len)
+        else:
+            micro_batches = data.split(self.config.ppo_micro_batch_size_per_gpu)
+
+        learning_rate_multiplier = float(data.meta_info.get("learning_rate_multiplier", 1.0))
+        if learning_rate_multiplier <= 0.0:
+            raise ValueError("SFT learning-rate multiplier must be positive")
+        original_lrs = [group["lr"] for group in self.actor_optimizer.param_groups]
+        base_learning_rate = data.meta_info.get("base_learning_rate", None)
+        sft_lrs = [
+            (lr if base_learning_rate is None else float(base_learning_rate)) * learning_rate_multiplier
+            for lr in original_lrs
+        ]
+        for group, sft_lr in zip(self.actor_optimizer.param_groups, sft_lrs, strict=True):
+            group["lr"] = sft_lr
+
+        metrics = {}
+        weighted_sft_loss = 0.0
+        self.actor_optimizer.zero_grad()
+        try:
+            for micro_batch in micro_batches:
+                micro_batch = micro_batch.to(get_device_id())
+                model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
+                response_mask = model_inputs["response_mask"]
+                _, log_prob = self._forward_micro_batch(
+                    model_inputs, temperature=1.0, calculate_entropy=False
+                )
+                sft_loss = -agg_loss(
+                    loss_mat=log_prob,
+                    loss_mask=response_mask,
+                    loss_agg_mode=self.config.loss_agg_mode,
+                )
+                loss_scale_factor = len(micro_batch) / len(data)
+                (sft_loss * loss_scale_factor).backward()
+                weighted_sft_loss += sft_loss.detach().item() * loss_scale_factor
+
+            grad_norm = self._optimizer_step()
+            append_to_dict(
+                metrics,
+                {
+                    "sft/loss": weighted_sft_loss,
+                    "sft/grad_norm": grad_norm.detach().item(),
+                    "sft/lr": sft_lrs[0],
+                    "sft/supervised_tokens": float(data.batch["response_mask"].sum().item()),
+                },
+            )
+        finally:
+            for group, original_lr in zip(self.actor_optimizer.param_groups, original_lrs, strict=True):
+                group["lr"] = original_lr
+            self.actor_optimizer.zero_grad()
         return metrics

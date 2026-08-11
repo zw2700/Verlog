@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import json
+import math
 import os
 import uuid
 from collections import defaultdict
@@ -50,12 +51,21 @@ from verl.trainer.ppo.metric_utils import (
     process_validation_metrics,
 )
 from verl.trainer.ppo.mismatch_helper import compute_rollout_importance_weights
+from verl.trainer.ppo.replay_buffer import (
+    FractionalUpdateScheduler,
+    RolloutReplayBuffer,
+    compute_source_advantage_metrics,
+    make_mixed_ppo_batch,
+    resolve_replay_sample_count,
+    validate_interleaved_sft_config,
+    validate_replay_config,
+)
 from verl.trainer.ppo.reward import compute_reward, compute_reward_async
 from verl.trainer.ppo.utils import Role, WorkerType, need_critic, need_reference_policy, need_reward_model
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path, should_save_ckpt_esi
 from verl.utils.config import omega_conf_to_dataclass
 from verl.utils.debug import marked_timer
-from verl.utils.metric import reduce_metrics
+from verl.utils.metric import finalize_weighted_source_metrics, reduce_metrics
 from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
@@ -97,6 +107,41 @@ def _checkpoint_modules_for_step(
         is_shared_save_step or is_critic_save_step or is_periodic_save_step
     )
     return bool(save_actor), bool(save_critic)
+
+
+def _append_replay_sample_trace(path: str, global_step: int, sampler: str, replay_batch: DataProto) -> None:
+    """Append a compact, exactly reproducible record of one replay draw."""
+    required = (
+        "replay_row_id",
+        "replay_collection_step",
+        "replay_is_warmup",
+        "replay_is_prioritized",
+        "replay_mean_raw_advantage",
+        "replay_mean_return",
+    )
+    missing = [key for key in required if key not in replay_batch.batch]
+    if missing:
+        raise KeyError(f"cannot write replay sample trace; missing keys: {missing}")
+
+    row_ids = replay_batch.batch["replay_row_id"].tolist()
+    prioritized = replay_batch.batch["replay_is_prioritized"].to(torch.bool)
+    record = {
+        "format_version": 1,
+        "global_step": int(global_step),
+        "sampler": str(sampler),
+        "sampled_row_ids": row_ids,
+        "prioritized_row_ids": replay_batch.batch["replay_row_id"][prioritized].tolist(),
+        "uniform_row_ids": replay_batch.batch["replay_row_id"][~prioritized].tolist(),
+        "collection_steps": replay_batch.batch["replay_collection_step"].tolist(),
+        "is_warmup": replay_batch.batch["replay_is_warmup"].tolist(),
+        "mean_raw_advantages": replay_batch.batch["replay_mean_raw_advantage"].tolist(),
+        "mean_returns": replay_batch.batch["replay_mean_return"].tolist(),
+    }
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as trace_file:
+        trace_file.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
 def get_episode_structure(episode_idx: np.ndarray):
@@ -463,6 +508,32 @@ class RayPPOTrainer:
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
         )
+
+        self.replay_config = self.config.algorithm.get("replay_buffer", {})
+        self.replay_enabled = bool(self.replay_config.get("enable", False))
+        self.replay_buffer = None
+        self.replay_generator = None
+        if self.replay_enabled:
+            validate_replay_config(self.replay_config)
+            if not self.use_critic:
+                raise ValueError("PPO replay currently requires a critic with collection-time values and returns")
+            self.replay_buffer = RolloutReplayBuffer(self.replay_config)
+            self.replay_generator = torch.Generator(device="cpu")
+            self.replay_generator.manual_seed(int(self.replay_config.get("seed", 90001)) + 1)
+
+        self.interleaved_sft_config = self.config.algorithm.get("interleaved_sft", {})
+        self.interleaved_sft_enabled = bool(self.interleaved_sft_config.get("enable", False))
+        self.interleaved_sft_scheduler = None
+        self.interleaved_sft_generator = None
+        if self.interleaved_sft_enabled:
+            validate_interleaved_sft_config(self.interleaved_sft_config)
+            if not self.replay_enabled or float(self.replay_config.get("replay_fraction", 0.5)) <= 0.0:
+                raise ValueError("interleaved replay SFT requires replay with a positive replay_fraction")
+            self.interleaved_sft_scheduler = FractionalUpdateScheduler(
+                float(self.interleaved_sft_config.get("updates_per_global_step", 0.25))
+            )
+            self.interleaved_sft_generator = torch.Generator(device="cpu")
+            self.interleaved_sft_generator.manual_seed(int(self.interleaved_sft_config.get("seed", 70001)))
 
         # if ref_in_actor is True, the reference policy will be actor without lora applied
         self.ref_in_actor = config.actor_rollout_ref.model.get("lora_rank", 0) > 0
@@ -1018,6 +1089,24 @@ class RayPPOTrainer:
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_local_path)
 
+        if self.replay_enabled:
+            replay_state_path = os.path.join(local_global_step_folder, "replay_buffer.pt")
+            replay_state = {
+                "replay_buffer": self.replay_buffer.state_dict(),
+                "mix_generator_state": self.replay_generator.get_state(),
+                "interleaved_sft_scheduler": (
+                    None
+                    if self.interleaved_sft_scheduler is None
+                    else self.interleaved_sft_scheduler.state_dict()
+                ),
+                "interleaved_sft_generator_state": (
+                    None
+                    if self.interleaved_sft_generator is None
+                    else self.interleaved_sft_generator.get_state()
+                ),
+            }
+            torch.save(replay_state, replay_state_path)
+
         # latest checkpointed iteration tracker (for atomic usage)
         local_latest_checkpointed_iteration = os.path.join(
             self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt"
@@ -1081,6 +1170,26 @@ class RayPPOTrainer:
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
+
+        if self.replay_enabled:
+            replay_state_path = os.path.join(global_step_folder, "replay_buffer.pt")
+            if not os.path.exists(replay_state_path):
+                if self.replay_config.get("strict_resume", True):
+                    raise FileNotFoundError(
+                        f"Replay is enabled but the resumed checkpoint has no replay state: {replay_state_path}"
+                    )
+                print(f"Warning: No replay state found at {replay_state_path}; resuming with an empty buffer")
+            else:
+                replay_state = torch.load(replay_state_path, weights_only=False, map_location="cpu")
+                self.replay_buffer.load_state_dict(replay_state["replay_buffer"])
+                self.replay_generator.set_state(replay_state["mix_generator_state"])
+                saved_sft_scheduler = replay_state.get("interleaved_sft_scheduler", None)
+                saved_sft_generator = replay_state.get("interleaved_sft_generator_state", None)
+                if self.interleaved_sft_scheduler is not None:
+                    if saved_sft_scheduler is None or saved_sft_generator is None:
+                        raise ValueError("checkpoint lacks interleaved SFT state required by the current config")
+                    self.interleaved_sft_scheduler.load_state_dict(saved_sft_scheduler)
+                    self.interleaved_sft_generator.set_state(saved_sft_generator)
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1417,21 +1526,155 @@ class RayPPOTrainer:
                         indices_to_keep = torch.randperm(len(batch4train))[:num_indices]
                         batch4train = batch4train.select_idxs(indices_to_keep)
 
+                    # Keep a stable reference to the just-collected rows. They are
+                    # inserted only after all updates, including during critic warmup.
+                    online_batch4train = batch4train
+                    ppo_batch = online_batch4train
+                    sampled_replay_batch = None
+                    replay_active = False
+                    requested_replay_rows = 0
+                    realized_replay_fraction = 0.0
+
+                    # Warmup rows are collected, but replay does not alter the
+                    # critic-only warmup objective. The first actor PPO step may
+                    # consume all strictly-past warmup batches.
+                    actor_update_enabled = self.config.trainer.critic_warmup < self.global_steps
+                    if self.replay_enabled and actor_update_enabled and self.replay_buffer.ready:
+                        replay_divisor = self.actor_rollout_wg.world_size
+                        if self.use_critic:
+                            replay_divisor = math.lcm(replay_divisor, self.critic_wg.world_size)
+                        requested_replay_rows, realized_replay_fraction = resolve_replay_sample_count(
+                            len(online_batch4train),
+                            float(self.replay_config.get("replay_fraction", 0.5)),
+                            divisor=replay_divisor,
+                        )
+                        available_replay_rows = (len(self.replay_buffer) // replay_divisor) * replay_divisor
+                        replay_rows = min(requested_replay_rows, available_replay_rows)
+                        if replay_rows > 0:
+                            sampled_replay_batch, replay_metrics = self.replay_buffer.sample(
+                                replay_rows, current_step=self.global_steps
+                            )
+                            metrics.update(replay_metrics)
+                            replay_trace_path = self.replay_config.get("sample_trace_path", None)
+                            if replay_trace_path:
+                                _append_replay_sample_trace(
+                                    str(replay_trace_path),
+                                    self.global_steps,
+                                    str(self.replay_config.get("sampler", "recency_advantage")),
+                                    sampled_replay_batch,
+                                )
+                            ppo_batch = make_mixed_ppo_batch(
+                                online_batch4train,
+                                sampled_replay_batch,
+                                generator=self.replay_generator,
+                            )
+                            metrics.update(compute_source_advantage_metrics(ppo_batch))
+                            if self.config.trainer.balance_batch:
+                                self._balance_batch(ppo_batch, metrics=metrics, logging_prefix="replay_seqlen")
+                            replay_active = True
+                            realized_replay_fraction = replay_rows / len(ppo_batch)
+
+                    metrics.update(
+                        {
+                            "replay/active": float(replay_active),
+                            "replay/requested_fraction": float(
+                                self.replay_config.get("replay_fraction", 0.5)
+                            )
+                            if self.replay_enabled
+                            else 0.0,
+                            "replay/realized_fraction": float(realized_replay_fraction),
+                            "replay/requested_rows": float(requested_replay_rows),
+                            "replay/online_rows": float(len(online_batch4train)),
+                        }
+                    )
+
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
-                            critic_output = self.critic_wg.update_critic(batch4train)
+                            critic_output = self.critic_wg.update_critic(ppo_batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
+                        finalize_weighted_source_metrics(critic_output_metrics, role="critic")
                         metrics.update(critic_output_metrics)
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup < self.global_steps:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
-                            batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                            actor_output = self.actor_rollout_wg.update_actor(batch4train)
+                            ppo_batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                            actor_output = self.actor_rollout_wg.update_actor(ppo_batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                        finalize_weighted_source_metrics(actor_output_metrics, role="actor")
                         metrics.update(actor_output_metrics)
+
+                    sft_updates_this_step = 0
+                    sft_supervised_sequences = 0
+                    sft_supervised_tokens = 0
+                    if self.interleaved_sft_enabled:
+                        sft_start = self.interleaved_sft_config.get("start_global_step", None)
+                        sft_end = self.interleaved_sft_config.get("end_global_step", None)
+                        sft_window_open = (sft_start is None or self.global_steps >= int(sft_start)) and (
+                            sft_end is None or self.global_steps <= int(sft_end)
+                        )
+                        sft_eligible = replay_active and sft_window_open
+                        sft_updates_this_step = self.interleaved_sft_scheduler.step(eligible=sft_eligible)
+                        if sft_updates_this_step:
+                            sft_batch_size = int(self.interleaved_sft_config.get("global_batch_size", 32))
+                            sft_divisor = self.actor_rollout_wg.world_size
+                            if sft_batch_size % sft_divisor != 0:
+                                raise ValueError(
+                                    f"interleaved SFT global_batch_size={sft_batch_size} must be divisible by "
+                                    f"the actor worker count {sft_divisor}"
+                                )
+                            if sft_batch_size > len(sampled_replay_batch):
+                                raise ValueError(
+                                    f"interleaved SFT global_batch_size={sft_batch_size} exceeds the sampled "
+                                    f"replay pool of {len(sampled_replay_batch)} rows"
+                                )
+
+                            sft_metric_values = defaultdict(list)
+                            with marked_timer("update_sft", timing_raw, color="orange"):
+                                for _ in range(sft_updates_this_step):
+                                    sft_indices = torch.randperm(
+                                        len(sampled_replay_batch), generator=self.interleaved_sft_generator
+                                    )[:sft_batch_size]
+                                    sft_batch = sampled_replay_batch.select_idxs(sft_indices)
+                                    sft_batch.meta_info["global_token_num"] = (
+                                        sft_batch.batch["attention_mask"].sum(dim=-1).tolist()
+                                    )
+                                    sft_batch.meta_info["learning_rate_multiplier"] = float(
+                                        self.interleaved_sft_config.get("learning_rate_multiplier", 1.0)
+                                    )
+                                    sft_batch.meta_info["base_learning_rate"] = float(
+                                        actor_output_metrics["actor/lr"]
+                                    )
+                                    sft_output = self.actor_rollout_wg.update_sft(sft_batch)
+                                    sft_metrics = reduce_metrics(sft_output.meta_info["metrics"])
+                                    for key, value in sft_metrics.items():
+                                        sft_metric_values[key].append(float(value))
+                                    sft_supervised_sequences += sft_batch_size
+                                    sft_supervised_tokens += int(sft_batch.batch["response_mask"].sum().item())
+                            metrics.update(
+                                {key: float(np.mean(values)) for key, values in sft_metric_values.items()}
+                            )
+
+                        metrics.update(
+                            {
+                                "sft/eligible": float(sft_eligible),
+                                "sft/updates_this_step": float(sft_updates_this_step),
+                                "sft/cumulative_updates": float(self.interleaved_sft_scheduler.total_updates),
+                                "sft/schedule_credit": float(self.interleaved_sft_scheduler.credit),
+                                "sft/supervised_sequences_this_step": float(sft_supervised_sequences),
+                                "sft/supervised_tokens_this_step": float(sft_supervised_tokens),
+                            }
+                        )
+
+                    if self.replay_enabled:
+                        insertion_metrics = self.replay_buffer.append(
+                            online_batch4train,
+                            collection_step=self.global_steps,
+                            is_warmup=not actor_update_enabled,
+                        )
+                        metrics.update(insertion_metrics)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

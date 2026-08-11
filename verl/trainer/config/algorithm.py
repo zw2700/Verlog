@@ -17,7 +17,13 @@ from typing import Any, Optional
 
 from verl.base_config import BaseConfig
 
-__all__ = ["AlgoConfig", "FilterGroupsConfig", "KLControlConfig"]
+__all__ = [
+    "AlgoConfig",
+    "FilterGroupsConfig",
+    "InterleavedSFTConfig",
+    "KLControlConfig",
+    "ReplayBufferConfig",
+]
 
 
 @dataclass
@@ -54,6 +60,42 @@ class FilterGroupsConfig(BaseConfig):
     enable: bool = False
     metric: Optional[str] = None
     max_num_gen_batches: int = 0
+
+
+@dataclass
+class ReplayBufferConfig(BaseConfig):
+    """Configuration for strictly-past PPO replay."""
+
+    enable: bool = False
+    replay_fraction: float = 0.5
+    sampler: str = "recency_advantage"
+    minimum_buffer_updates: int = 8
+    minimum_buffer_rows: int = 0
+    capacity_updates: Optional[int] = None
+    priority_alpha: float = 0.6
+    return_alpha: float = 0.5
+    prioritized_fraction: float = 0.9
+    recency_half_life_updates: float = 16.0
+    priority_epsilon: float = 1e-6
+    seed: int = 90001
+    warmup_max_rows_per_update: Optional[int] = None
+    warmup_admission_seed: int = 90003
+    sample_trace_path: Optional[str] = None
+    strict_resume: bool = True
+
+
+@dataclass
+class InterleavedSFTConfig(BaseConfig):
+    """Configuration for separate supervised actor updates on sampled replay."""
+
+    enable: bool = False
+    source: str = "sampled_replay"
+    updates_per_global_step: float = 0.25
+    global_batch_size: int = 32
+    learning_rate_multiplier: float = 1.0
+    start_global_step: Optional[int] = None
+    end_global_step: Optional[int] = None
+    seed: int = 70001
 
 
 @dataclass
@@ -103,3 +145,5 @@ class AlgoConfig(BaseConfig):
     # Controls whether to apply IS weights to policy loss (only if rollout_is_threshold is set)
     # True = apply weights to loss, False = compute metrics only (no weight application)
     rollout_is: bool = False
+    replay_buffer: ReplayBufferConfig = field(default_factory=ReplayBufferConfig)
+    interleaved_sft: InterleavedSFTConfig = field(default_factory=InterleavedSFTConfig)

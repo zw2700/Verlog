@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .utils import reduce_metrics
+from .utils import finalize_weighted_source_metrics, reduce_metrics
 
-__all__ = ["reduce_metrics"]
+__all__ = ["finalize_weighted_source_metrics", "reduce_metrics"]

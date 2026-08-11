@@ -137,6 +137,91 @@ algorithm:
   # Useful for monitoring mismatch before enabling correction
   rollout_is: false
 
+  # Strictly-past online rollout replay for actor and critic PPO updates.
+  replay_buffer:
+
+    # Required when converting this nested config to a dataclass.
+    _target_: verl.trainer.config.ReplayBufferConfig
+
+    # Whether PPO replay is enabled.
+    enable: false
+
+    # Fraction of the final mixed PPO batch drawn from replay.
+    replay_fraction: 0.5
+
+    # Replay sampler: "uniform", "recency_advantage", or "recency_advantage_return".
+    sampler: recency_advantage
+
+    # Number of completed rollout updates required before replay is sampled.
+    minimum_buffer_updates: 8
+
+    # Minimum admitted rows required in addition to minimum_buffer_updates.
+    minimum_buffer_rows: 0
+
+    # FIFO capacity in rollout updates. Null retains all updates.
+    capacity_updates: null
+
+    # Exponent applied to positive collection-time advantages.
+    priority_alpha: 0.6
+
+    # Exponent applied to positive response-token mean returns by the return-aware sampler.
+    return_alpha: 0.5
+
+    # Fraction sampled from priorities; the remainder is uniform.
+    prioritized_fraction: 0.9
+
+    # Recency half-life measured in PPO global steps.
+    recency_half_life_updates: 16.0
+
+    # Positive floor for advantage priorities.
+    priority_epsilon: 1.0e-6
+
+    # CPU replay sampling seed.
+    seed: 90001
+
+    # Uniformly admit at most this many rows from each critic-only warmup update.
+    # Null preserves the original behavior of admitting every warmup row.
+    warmup_max_rows_per_update: null
+
+    # Separate CPU RNG seed for warmup admission, independent of replay sampling.
+    warmup_admission_seed: 90003
+
+    # Optional JSONL path recording every selected replay row ID and sampling channel.
+    sample_trace_path: null
+
+    # Fail rather than silently empty replay when a resumed checkpoint lacks replay state.
+    strict_resume: true
+
+  # Separate supervised actor updates on responses sampled for replay PPO.
+  interleaved_sft:
+
+    # Required when converting this nested config to a dataclass.
+    _target_: verl.trainer.config.InterleavedSFTConfig
+
+    # Whether interleaved replay SFT is enabled.
+    enable: false
+
+    # The first implementation supports the replay subset sampled for PPO.
+    source: sampled_replay
+
+    # SFT optimizer updates per eligible PPO global step; fractional values are accumulated.
+    updates_per_global_step: 0.25
+
+    # Number of replay sequences in one global SFT optimizer update.
+    global_batch_size: 32
+
+    # Multiplier applied to the actor's current scheduled learning rate during SFT.
+    learning_rate_multiplier: 1.0
+
+    # Optional inclusive global-step bounds. Null starts when replay first becomes active.
+    start_global_step: null
+
+    # Optional inclusive final global step for SFT.
+    end_global_step: null
+
+    # CPU SFT row-sampling seed.
+    seed: 70001
+
 # config for the trainer
 trainer:
 

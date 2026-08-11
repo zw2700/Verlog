@@ -244,10 +244,17 @@ class DataParallelPPOCritic(BasePPOCritic):
         metrics = {}
 
         select_keys = ["input_ids", "responses", "response_mask", "attention_mask", "position_ids", "values", "returns"]
+        if "is_replay" in data.batch.keys():
+            select_keys.append("is_replay")
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
+        has_source_labels = "is_replay" in data.batch
+        source_metric_totals = {
+            source: {"token_count": 0.0, "mse_numerator": 0.0, "clipfrac_numerator": 0.0}
+            for source in ("online", "replay")
+        }
 
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
@@ -255,13 +262,11 @@ class DataParallelPPOCritic(BasePPOCritic):
 
         for epoch_idx in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
+                actual_mini_batch_size = len(mini_batch)
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
                     micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
                 else:
-                    self.gradient_accumulation = (
-                        self.config.ppo_mini_batch_size // self.config.ppo_micro_batch_size_per_gpu
-                    )
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
 
                 self.critic_optimizer.zero_grad()
@@ -293,10 +298,10 @@ class DataParallelPPOCritic(BasePPOCritic):
                     )
 
                     if self.config.use_dynamic_bsz:
-                        loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
+                        loss_scale_factor = response_mask.shape[0] / actual_mini_batch_size
                         loss = vf_loss * loss_scale_factor
                     else:
-                        loss_scale_factor = 1 / self.gradient_accumulation
+                        loss_scale_factor = response_mask.shape[0] / actual_mini_batch_size
                         loss = vf_loss * loss_scale_factor
 
                     loss.backward()
@@ -309,10 +314,39 @@ class DataParallelPPOCritic(BasePPOCritic):
                         }
                     )
                     micro_batch_metrics.update(off_policy_metrics)
+                    if has_source_labels:
+                        with torch.no_grad():
+                            vpred_clipped = verl_F.clip_by_value(
+                                vpreds,
+                                values - self.config.cliprange_value,
+                                values + self.config.cliprange_value,
+                            )
+                            clipped = ((vpred_clipped - returns) ** 2 > (vpreds - returns) ** 2).to(
+                                response_mask.dtype
+                            )
+                            squared_error = (vpreds - returns) ** 2
+                            for source_name, source_rows in (
+                                ("replay", model_inputs["is_replay"].bool()),
+                                ("online", ~model_inputs["is_replay"].bool()),
+                            ):
+                                source_mask = response_mask * source_rows.unsqueeze(-1)
+                                source_metric_totals[source_name]["token_count"] += source_mask.sum()
+                                source_metric_totals[source_name]["mse_numerator"] += (
+                                    squared_error.float() * source_mask
+                                ).sum()
+                                source_metric_totals[source_name]["clipfrac_numerator"] += (
+                                    clipped * source_mask
+                                ).sum()
                     append_to_dict(metrics, micro_batch_metrics)
 
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"critic/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
+        if has_source_labels:
+            source_metrics = {}
+            for source_name, totals in source_metric_totals.items():
+                for metric_name, total in totals.items():
+                    source_metrics[f"critic/{source_name}_{metric_name}"] = float(total.item())
+            append_to_dict(metrics, source_metrics)
         self.critic_optimizer.zero_grad()
         return metrics

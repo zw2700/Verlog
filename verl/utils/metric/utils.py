@@ -19,6 +19,11 @@ from typing import Any
 
 import numpy as np
 
+_WEIGHTED_SOURCE_METRICS = {
+    "actor": ("approx_kl", "clipfrac", "ratio_mean"),
+    "critic": ("mse", "clipfrac"),
+}
+
 
 def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
     """
@@ -51,4 +56,34 @@ def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
             metrics[key] = np.min(val)
         else:
             metrics[key] = np.mean(val)
+    return metrics
+
+
+def finalize_weighted_source_metrics(metrics: dict[str, Any], role: str) -> dict[str, Any]:
+    """Convert reduced source numerator/count metrics into token-weighted means.
+
+    Actor and critic workers emit one fixed-shape sufficient-statistic value per
+    source, even when a worker sees zero tokens from that source. After the
+    cross-worker reduction, the ratio of the mean numerator to the mean count
+    equals the ratio of their global sums.
+
+    The function is a no-op when the batch did not carry source labels (for
+    example, critic-only warmup before a mixed replay batch is constructed).
+    """
+    try:
+        metric_names = _WEIGHTED_SOURCE_METRICS[role]
+    except KeyError as exc:
+        raise ValueError(f"unsupported weighted source metric role: {role}") from exc
+
+    for source in ("online", "replay"):
+        count_key = f"{role}/{source}_token_count"
+        if count_key not in metrics:
+            continue
+        token_count = float(metrics.pop(count_key))
+        for metric_name in metric_names:
+            numerator_key = f"{role}/{source}_{metric_name}_numerator"
+            numerator = float(metrics.pop(numerator_key))
+            metrics[f"{role}/{source}_{metric_name}"] = (
+                numerator / token_count if token_count > 0.0 else float("nan")
+            )
     return metrics
