@@ -140,3 +140,6 @@ GIT_GUIDELINE.md
 
 # ignore analysis from git
 analysis/
+
+# local critic analysis
+critic_analysis/
