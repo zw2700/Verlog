@@ -21,11 +21,13 @@ set -euo pipefail
 # logs/frank_<jobid>.out so each run documents what changed.
 # ============================================================================
 
-EXP_NOTES=(
-    "Model: Qwen3-4B; Env changes: no termination on all voted no consensus; enforce same-socket GPU allocation (enforce-binding + NUMA guard, cf. jobs 15930/16085); dynamic token-based micro-batching (ppo_max_token_len=8192) instead of fixed micro batch (micro=4 OOMed in update_actor backward, job 15856); critic warmup repeat=10/divide=1 (same 2,560 critic samples/step as 40/4, without generating 4x and dropping 3/4)."
-    "Episode jsonl sharded per worker"
-    "Critic-only model snapshots saved at steps 1, 5, 10, 30, and 75; optimizer and actor checkpoints disabled."
-)
+if ! declare -p EXP_NOTES >/dev/null 2>&1; then
+    EXP_NOTES=(
+        "Model: Qwen3-4B; Env changes: no termination on all voted no consensus; enforce same-socket GPU allocation (enforce-binding + NUMA guard, cf. jobs 15930/16085); dynamic token-based micro-batching (ppo_max_token_len=8192) instead of fixed micro batch (micro=4 OOMed in update_actor backward, job 15856); critic warmup repeat=10/divide=1 (same 2,560 critic samples/step as 40/4, without generating 4x and dropping 3/4)."
+        "Episode jsonl sharded per worker"
+        "Non-replay runs retain critic-only probes; replay runs default to resumable actor+critic+optimizer+buffer checkpoints at steps 10, 30, and 75."
+    )
+fi
 
 echo "=== Experiment Notes ==="
 if [ "${#EXP_NOTES[@]}" -eq 0 ]; then
@@ -159,7 +161,7 @@ export RAY_BACKEND_LOG_LEVEL=warning
 # GPU & vLLM
 # ============================================================================
 
-NUM_GPUS_PER_NODE=4
+NUM_GPUS_PER_NODE="${NUM_GPUS_PER_NODE:-4}"
 unset ROCR_VISIBLE_DEVICES
 if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
     export CUDA_VISIBLE_DEVICES=$(seq -s, 0 $((NUM_GPUS_PER_NODE-1)))
@@ -318,7 +320,7 @@ export VERL_PROFILE_AGENT_LOOP="${VERL_PROFILE_AGENT_LOOP:-1}"
 # HYPERPARAMETERS
 # ============================================================================
 
-NUM_ENVS=32
+NUM_ENVS="${NUM_ENVS:-32}"
 MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3-4B}"
 ENABLE_THINKING="${ENABLE_THINKING:-false}"
 VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
@@ -333,14 +335,47 @@ FORWARD_BATCH_SIZE="${FORWARD_BATCH_SIZE:-16}"
 # 8192 keeps the worst case (~8192+4608 tokens) below the ~18k that OOMed 15856.
 USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-True}"
 PPO_MAX_TOKEN_LEN="${PPO_MAX_TOKEN_LEN:-8192}"
-OFFLOAD=false
+OFFLOAD="${OFFLOAD:-false}"
+ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.4}"
 PPO_EPOCHS=2
+TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-75}"
 CRITIC_WARMUP="${CRITIC_WARMUP:-10}"
 # repeat=10/divide=1: generate exactly what the critic trains on (2,560
 # samples/step). The old 40/4 combo generated 4x more and dropped 3/4 of it -
 # a leftover from when warmup generated once at step 1 and reused the pool.
 CRITIC_WARMUP_BATCH_REPEAT_TIMES="${CRITIC_WARMUP_BATCH_REPEAT_TIMES:-10}"
 CRITIC_WARMUP_BATCH_DIVIDE_RATIO="${CRITIC_WARMUP_BATCH_DIVIDE_RATIO:-1}"
+REPLAY_ENABLE="${REPLAY_ENABLE:-false}"
+REPLAY_FRACTION="${REPLAY_FRACTION:-0.5}"
+REPLAY_SAMPLER="${REPLAY_SAMPLER:-recency_advantage}"
+REPLAY_MINIMUM_BUFFER_UPDATES="${REPLAY_MINIMUM_BUFFER_UPDATES:-8}"
+REPLAY_MINIMUM_BUFFER_ROWS="${REPLAY_MINIMUM_BUFFER_ROWS:-0}"
+REPLAY_CAPACITY_UPDATES="${REPLAY_CAPACITY_UPDATES:-null}"
+REPLAY_PRIORITY_ALPHA="${REPLAY_PRIORITY_ALPHA:-0.6}"
+REPLAY_RETURN_ALPHA="${REPLAY_RETURN_ALPHA:-0.5}"
+REPLAY_PRIORITIZED_FRACTION="${REPLAY_PRIORITIZED_FRACTION:-0.9}"
+REPLAY_RECENCY_HALF_LIFE_UPDATES="${REPLAY_RECENCY_HALF_LIFE_UPDATES:-16.0}"
+REPLAY_PRIORITY_EPSILON="${REPLAY_PRIORITY_EPSILON:-1.0e-6}"
+REPLAY_SEED="${REPLAY_SEED:-90001}"
+REPLAY_WARMUP_MAX_ROWS_PER_UPDATE="${REPLAY_WARMUP_MAX_ROWS_PER_UPDATE:-null}"
+REPLAY_WARMUP_ADMISSION_SEED="${REPLAY_WARMUP_ADMISSION_SEED:-90003}"
+REPLAY_SAMPLE_TRACE_PATH="${REPLAY_SAMPLE_TRACE_PATH:-null}"
+USE_KL_IN_REWARD="${USE_KL_IN_REWARD:-true}"
+INTERLEAVED_SFT_ENABLE="${INTERLEAVED_SFT_ENABLE:-false}"
+SFT_UPDATES_PER_GLOBAL_STEP="${SFT_UPDATES_PER_GLOBAL_STEP:-0.25}"
+SFT_GLOBAL_BATCH_SIZE="${SFT_GLOBAL_BATCH_SIZE:-32}"
+SFT_LEARNING_RATE_MULTIPLIER="${SFT_LEARNING_RATE_MULTIPLIER:-1.0}"
+if [ "$REPLAY_ENABLE" = "true" ] || [ "$REPLAY_ENABLE" = "True" ]; then
+    SAVE_ACTOR_CHECKPOINT="${SAVE_ACTOR_CHECKPOINT:-true}"
+    ACTOR_SAVE_STEPS="${ACTOR_SAVE_STEPS:-[10,30,75]}"
+    CRITIC_SAVE_STEPS="${CRITIC_SAVE_STEPS:-[10,30,75]}"
+    CRITIC_CHECKPOINT_CONTENTS="${CRITIC_CHECKPOINT_CONTENTS:-[\"model\",\"optimizer\",\"extra\"]}"
+else
+    SAVE_ACTOR_CHECKPOINT="${SAVE_ACTOR_CHECKPOINT:-false}"
+    ACTOR_SAVE_STEPS="${ACTOR_SAVE_STEPS:-null}"
+    CRITIC_SAVE_STEPS="${CRITIC_SAVE_STEPS:-[1,5,10,30,75]}"
+    CRITIC_CHECKPOINT_CONTENTS="${CRITIC_CHECKPOINT_CONTENTS:-[\"model\"]}"
+fi
 STUDENTS_PER_BATCH="${STUDENTS_PER_BATCH:-5}"
 TERMINATE_ON_ALL_VOTED_NO_CONSENSUS="${TERMINATE_ON_ALL_VOTED_NO_CONSENSUS:-false}"
 PROFESSOR_PREFERENCE_MODE="${PROFESSOR_PREFERENCE_MODE:-random_permutation}"
@@ -361,10 +396,36 @@ echo "Critic PPO Micro Batch Size: $CRITIC_MICRO_BATCH_SIZE"
 echo "Forward Micro Batch Size: $FORWARD_BATCH_SIZE"
 echo "Use dynamic batch size: $USE_DYNAMIC_BSZ"
 echo "PPO max token len per GPU: $PPO_MAX_TOKEN_LEN"
+echo "Parameter/optimizer offload: $OFFLOAD"
+echo "Rollout GPU memory utilization: $ROLLOUT_GPU_MEMORY_UTILIZATION"
 echo "PPO Epochs: $PPO_EPOCHS"
+echo "Total training steps: $TOTAL_TRAINING_STEPS"
 echo "Critic warmup: $CRITIC_WARMUP"
 echo "Critic warmup batch repeat times: $CRITIC_WARMUP_BATCH_REPEAT_TIMES"
 echo "Critic warmup batch divide ratio: $CRITIC_WARMUP_BATCH_DIVIDE_RATIO"
+echo "Replay enabled: $REPLAY_ENABLE"
+echo "Replay fraction: $REPLAY_FRACTION"
+echo "Replay sampler: $REPLAY_SAMPLER"
+echo "Replay minimum buffer updates: $REPLAY_MINIMUM_BUFFER_UPDATES"
+echo "Replay minimum buffer rows: $REPLAY_MINIMUM_BUFFER_ROWS"
+echo "Replay capacity updates: $REPLAY_CAPACITY_UPDATES"
+echo "Replay priority alpha: $REPLAY_PRIORITY_ALPHA"
+echo "Replay return alpha: $REPLAY_RETURN_ALPHA"
+echo "Replay prioritized fraction: $REPLAY_PRIORITIZED_FRACTION"
+echo "Replay recency half-life: $REPLAY_RECENCY_HALF_LIFE_UPDATES"
+echo "Replay priority epsilon: $REPLAY_PRIORITY_EPSILON"
+echo "Replay sampling seed: $REPLAY_SEED"
+echo "Replay warmup max rows/update: $REPLAY_WARMUP_MAX_ROWS_PER_UPDATE"
+echo "Replay warmup admission seed: $REPLAY_WARMUP_ADMISSION_SEED"
+echo "Replay sample trace: $REPLAY_SAMPLE_TRACE_PATH"
+echo "KL penalty in reward: $USE_KL_IN_REWARD"
+echo "Interleaved SFT enabled: $INTERLEAVED_SFT_ENABLE"
+echo "SFT updates per global step: $SFT_UPDATES_PER_GLOBAL_STEP"
+echo "SFT global batch size: $SFT_GLOBAL_BATCH_SIZE"
+echo "SFT learning-rate multiplier: $SFT_LEARNING_RATE_MULTIPLIER"
+echo "Actor checkpoint steps: $ACTOR_SAVE_STEPS"
+echo "Critic checkpoint steps: $CRITIC_SAVE_STEPS"
+echo "Critic checkpoint contents: $CRITIC_CHECKPOINT_CONTENTS"
 echo "Students per batch: $STUDENTS_PER_BATCH"
 echo "Terminate on all voted no consensus: $TERMINATE_ON_ALL_VOTED_NO_CONSENSUS"
 echo "Professor preference mode: $PROFESSOR_PREFERENCE_MODE"
@@ -420,7 +481,7 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.agent.default_agent_loop=multi_tool_agent_loop \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=${ROLLOUT_GPU_MEMORY_UTILIZATION} \
     actor_rollout_ref.rollout.n=1 \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=${FORWARD_BATCH_SIZE} \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=16384 \
@@ -441,7 +502,26 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=${FORWARD_BATCH_SIZE} \
     actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=16384 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
-    algorithm.use_kl_in_reward=True \
+    algorithm.use_kl_in_reward=${USE_KL_IN_REWARD} \
+    algorithm.replay_buffer.enable=${REPLAY_ENABLE} \
+    algorithm.replay_buffer.replay_fraction=${REPLAY_FRACTION} \
+    algorithm.replay_buffer.sampler=${REPLAY_SAMPLER} \
+    algorithm.replay_buffer.minimum_buffer_updates=${REPLAY_MINIMUM_BUFFER_UPDATES} \
+    algorithm.replay_buffer.minimum_buffer_rows=${REPLAY_MINIMUM_BUFFER_ROWS} \
+    algorithm.replay_buffer.capacity_updates=${REPLAY_CAPACITY_UPDATES} \
+    algorithm.replay_buffer.priority_alpha=${REPLAY_PRIORITY_ALPHA} \
+    algorithm.replay_buffer.return_alpha=${REPLAY_RETURN_ALPHA} \
+    algorithm.replay_buffer.prioritized_fraction=${REPLAY_PRIORITIZED_FRACTION} \
+    algorithm.replay_buffer.recency_half_life_updates=${REPLAY_RECENCY_HALF_LIFE_UPDATES} \
+    algorithm.replay_buffer.priority_epsilon=${REPLAY_PRIORITY_EPSILON} \
+    algorithm.replay_buffer.seed=${REPLAY_SEED} \
+    algorithm.replay_buffer.warmup_max_rows_per_update=${REPLAY_WARMUP_MAX_ROWS_PER_UPDATE} \
+    algorithm.replay_buffer.warmup_admission_seed=${REPLAY_WARMUP_ADMISSION_SEED} \
+    algorithm.replay_buffer.sample_trace_path=${REPLAY_SAMPLE_TRACE_PATH} \
+    algorithm.interleaved_sft.enable=${INTERLEAVED_SFT_ENABLE} \
+    algorithm.interleaved_sft.updates_per_global_step=${SFT_UPDATES_PER_GLOBAL_STEP} \
+    algorithm.interleaved_sft.global_batch_size=${SFT_GLOBAL_BATCH_SIZE} \
+    algorithm.interleaved_sft.learning_rate_multiplier=${SFT_LEARNING_RATE_MULTIPLIER} \
     trainer.balance_batch=False \
     trainer.critic_warmup=${CRITIC_WARMUP} \
     trainer.critic_warmup_batch_repeat_times=${CRITIC_WARMUP_BATCH_REPEAT_TIMES} \
@@ -453,14 +533,16 @@ $PYTHON_BIN -m verl.trainer.main_ppo \
     trainer.n_gpus_per_node=${NUM_GPUS_PER_NODE} \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \
-    trainer.save_steps='[1,5,10,30,75]' \
-    trainer.save_actor_checkpoint=False \
+    trainer.save_steps=null \
+    trainer.actor_save_steps=${ACTOR_SAVE_STEPS} \
+    trainer.critic_save_steps=${CRITIC_SAVE_STEPS} \
+    trainer.save_actor_checkpoint=${SAVE_ACTOR_CHECKPOINT} \
     trainer.save_critic_checkpoint=True \
-    critic.checkpoint.save_contents='["model"]' \
-    critic.checkpoint.load_contents='["model"]' \
+    critic.checkpoint.save_contents=${CRITIC_CHECKPOINT_CONTENTS} \
+    critic.checkpoint.load_contents=${CRITIC_CHECKPOINT_CONTENTS} \
     trainer.test_freq=-1 \
     trainer.total_epochs=15 \
-    trainer.total_training_steps=75 \
+    trainer.total_training_steps=${TOTAL_TRAINING_STEPS} \
     trainer.val_before_train=${VAL_BEFORE_TRAIN} \
     envs.num_envs=${NUM_ENVS} \
     envs.env_name=async_ticker_admissions \
