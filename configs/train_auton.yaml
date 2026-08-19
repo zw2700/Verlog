@@ -23,6 +23,11 @@ algorithm:
   adv_estimator: gae
   use_kl_in_reward: true
 
+# The actor always receives its ordinary private observation. This switch only
+# selects the prompt tensors routed to the value critic.
+critic_observation:
+  mode: actor_visible  # actor_visible | all_utilities
+
 data:
   train_batch_size: 256
   max_prompt_length: 4096
@@ -57,6 +62,7 @@ actor_rollout_ref:
     agent:
       default_agent_loop: multi_tool_agent_loop
       num_workers: ${envs.num_envs}
+      reward_manager_num_cpus: 0.25
   actor:
     optim:
       lr: 1e-6

@@ -29,8 +29,11 @@ PYTHON_BIN="$ENV_PATH/bin/python3"
 
 JOB_ID="${SLURM_JOB_ID:-local_$(date +%s)}"
 export HF_HOME="${HF_HOME:-$PROJECT_DIR/.cache/huggingface}"
-TMPDIR_BASE="${TMPDIR:-$PROJECT_DIR/tmp}"
-export TMPDIR="${TMPDIR_BASE%/}/${JOB_ID}"
+# Ray control state and multiprocessing scratch are node-local and ephemeral.
+# Keeping them on NFS creates .nfs cleanup failures and makes Ray sensitive to
+# shared-scratch stalls. SLURM_TMPDIR is preferred when the site provides it.
+LOCAL_TMP_BASE="${SLURM_TMPDIR:-/tmp}"
+export TMPDIR="${LOCAL_TMP_BASE%/}/verlog-${USER:-user}-${JOB_ID}"
 export RAY_TMPDIR="$TMPDIR/ray"
 mkdir -p "$HF_HOME" "$TMPDIR" "$PROJECT_DIR/logs"
 
@@ -61,6 +64,8 @@ export MKL_NUM_THREADS=1
 export RAY_raylet_startup_timeout_ms=120000
 export RAY_gcs_server_request_timeout_seconds=60
 export RAY_BACKEND_LOG_LEVEL=warning
+# Do not let zero-GPU Ray actors replace the Slurm-provided device visibility.
+export RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
 
 # ---------------------------------------------------------------------------
 # GPU + vLLM. NUM_GPUS_PER_NODE is exported so the Hydra config can read it via
@@ -86,9 +91,22 @@ export VERL_AGENT_IO_LOG_PATH="$PROJECT_DIR/logs/agent_model_${JOB_ID}.log"
 export VERL_AGENT_IO_LOG_FULL_PROMPT=0
 export VERL_AGENT_EPISODE_LOG_PATH="$PROJECT_DIR/logs/episode_log_${JOB_ID}.jsonl"
 export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_${JOB_ID}.log"
+export VERL_CRITIC_ROW_LOG_PATH="$PROJECT_DIR/logs/critic_rows_${JOB_ID}.jsonl"
 : > "$VERL_AGENT_IO_LOG_PATH"
+: > "$VERL_CRITIC_ROW_LOG_PATH"
 
 echo "=== Job ${JOB_ID} on ${SLURMD_NODENAME:-local} — $(date) ==="
 echo "PROJECT_DIR=$PROJECT_DIR  ENV_PATH=$ENV_PATH  GPUs=$NUM_GPUS_PER_NODE  Ray CPUs=$RAY_NUM_CPUS"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 nvidia-smi -L 2>/dev/null || echo "WARN: nvidia-smi unavailable"
+
+# Slurm occasionally returns a GPU before an old CUDA process has disappeared.
+# Refuse to start rather than turning that node contamination into a misleading
+# model OOM. With ConstrainDevices enabled, this query sees only this job's GPUs.
+GPU_COMPUTE_APPS="$(nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader,nounits 2>/dev/null || true)"
+if [[ "$GPU_COMPUTE_APPS" =~ [^[:space:]] ]]; then
+    echo "ERROR: allocated GPU(s) already contain compute processes; refusing to launch" >&2
+    echo "gpu_uuid, pid, used_memory_mib" >&2
+    printf '%s\n' "$GPU_COMPUTE_APPS" >&2
+    exit 42
+fi

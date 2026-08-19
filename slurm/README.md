@@ -93,7 +93,8 @@ This keeps every allocation, resolved config, W&B run, and failure independent.
 - preserves the GPU list assigned by Slurm;
 - derives `trainer.n_gpus_per_node` from the allocation;
 - passes `SLURM_CPUS_PER_TASK` to `ray.init()`;
-- creates job-scoped temporary and Ray directories;
+- creates job-scoped temporary and Ray directories on node-local storage;
+- refuses to launch if an allocated GPU already contains a compute process;
 - never stops or deletes Ray state belonging to another job;
 - accepts standard W&B login state or `WANDB_API_KEY`.
 

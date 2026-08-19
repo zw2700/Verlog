@@ -1,0 +1,42 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "background": "white",
+  "spacing": 48,
+  "hconcat": [
+    {
+      "title": {"text": "Before SFT: expert region is rarely sampled", "font": "Helvetica", "fontSize": 21, "fontWeight": 700, "anchor": "start", "offset": 18},
+      "width": 470,
+      "height": 270,
+      "data": {"sequence": {"start": -4.5, "stop": 4.01, "step": 0.04, "as": "x"}},
+      "transform": [
+        {"calculate": "exp(-0.5 * pow((datum.x - 1.5) / 0.7, 2)) / (0.7 * 2.506628)", "as": "Expert"},
+        {"calculate": "exp(-0.5 * pow((datum.x + 1.8) / 0.85, 2)) / (0.85 * 2.506628)", "as": "Policy"},
+        {"calculate": "min(datum.Expert, datum.Policy)", "as": "Overlap"}
+      ],
+      "layer": [
+        {"mark": {"type": "area", "color": "#d9d9d9", "opacity": 0.9}, "encoding": {"x": {"field": "x", "type": "quantitative", "title": "trajectory embedding", "scale": {"domain": [-4.5, 4]}}, "y": {"field": "Overlap", "type": "quantitative", "title": "density", "scale": {"domain": [0, 0.61]}}}},
+        {"transform": [{"fold": ["Expert", "Policy"], "as": ["Distribution", "Density"]}], "mark": {"type": "line", "strokeWidth": 3}, "encoding": {"x": {"field": "x", "type": "quantitative"}, "y": {"field": "Density", "type": "quantitative"}, "color": {"field": "Distribution", "type": "nominal", "scale": {"domain": ["Expert", "Policy"], "range": ["#111111", "#777777"]}, "legend": {"title": null, "orient": "top", "direction": "horizontal", "labelFont": "Helvetica", "labelFontSize": 15}}, "strokeDash": {"field": "Distribution", "type": "nominal", "scale": {"domain": ["Expert", "Policy"], "range": [[1, 0], [8, 6]]}, "legend": null}}}
+      ]
+    },
+    {
+      "title": {"text": "After SFT: finite-K matching becomes useful", "font": "Helvetica", "fontSize": 21, "fontWeight": 700, "anchor": "start", "offset": 18},
+      "width": 470,
+      "height": 270,
+      "data": {"sequence": {"start": -4.5, "stop": 4.01, "step": 0.04, "as": "x"}},
+      "transform": [
+        {"calculate": "exp(-0.5 * pow((datum.x - 1.5) / 0.7, 2)) / (0.7 * 2.506628)", "as": "Expert"},
+        {"calculate": "exp(-0.5 * pow((datum.x - 0.35) / 1.0, 2)) / (1.0 * 2.506628)", "as": "Policy"},
+        {"calculate": "min(datum.Expert, datum.Policy)", "as": "Overlap"}
+      ],
+      "layer": [
+        {"mark": {"type": "area", "color": "#bdbdbd", "opacity": 0.9}, "encoding": {"x": {"field": "x", "type": "quantitative", "title": "trajectory embedding", "scale": {"domain": [-4.5, 4]}}, "y": {"field": "Overlap", "type": "quantitative", "title": null, "scale": {"domain": [0, 0.61]}}}},
+        {"transform": [{"fold": ["Expert", "Policy"], "as": ["Distribution", "Density"]}], "mark": {"type": "line", "strokeWidth": 3}, "encoding": {"x": {"field": "x", "type": "quantitative"}, "y": {"field": "Density", "type": "quantitative"}, "color": {"field": "Distribution", "type": "nominal", "scale": {"domain": ["Expert", "Policy"], "range": ["#111111", "#777777"]}, "legend": {"title": null, "orient": "top", "direction": "horizontal", "labelFont": "Helvetica", "labelFontSize": 15}}, "strokeDash": {"field": "Distribution", "type": "nominal", "scale": {"domain": ["Expert", "Policy"], "range": [[1, 0], [8, 6]]}, "legend": null}}}
+      ]
+    }
+  ],
+  "config": {
+    "font": "Helvetica",
+    "axis": {"labelFont": "Helvetica", "titleFont": "Helvetica", "labelFontSize": 14, "titleFontSize": 15, "gridColor": "#eeeeee", "domainColor": "#777777", "tickColor": "#777777"},
+    "view": {"stroke": null}
+  }
+}

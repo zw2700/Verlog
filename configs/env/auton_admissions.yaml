@@ -21,3 +21,10 @@ env_config:
   professor_preference_mode: random_permutation
   preference_correlation_threshold: 0.0
   preference_rejection_max_attempts: 1000
+
+  # Opt-in critic sanity check. "visible" adds a random per-professor +/-1
+  # terminal reward to the prompt; "hidden" is the negative control.
+  critic_probe_mode: "off"
+
+  # Optional deterministic seed for critic probe targets.
+  critic_probe_seed: null

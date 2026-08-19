@@ -24,6 +24,7 @@ import uuid
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from pprint import pprint
 from typing import Optional
 
@@ -47,6 +48,7 @@ from verl.trainer.ppo.metric_utils import (
     compute_data_metrics,
     compute_throughout_metrics,
     compute_timing_metrics,
+    get_completed_critic_probe_indices,
     process_validation_metrics,
 )
 from verl.trainer.ppo.mismatch_helper import compute_rollout_importance_weights
@@ -60,6 +62,108 @@ from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+
+
+def as_critic_input(data: DataProto) -> DataProto:
+    """Create a zero-copy DataProto view using critic-only prompt tensors.
+
+    Actor/reference workers continue to receive the original canonical keys.
+    Only calls into the critic get this remapped view, which prevents privileged
+    state from changing actor log-probabilities or policy updates.
+    """
+    required = {
+        "critic_prompts",
+        "critic_input_ids",
+        "critic_attention_mask",
+        "critic_position_ids",
+    }
+    missing = sorted(required.difference(data.batch.keys()))
+    if missing:
+        raise KeyError(f"critic-only input tensors are missing: {missing}")
+
+    tensors = {
+        key: value
+        for key, value in data.batch.items()
+        if not key.startswith("critic_") and key not in {"prompts", "input_ids", "attention_mask", "position_ids"}
+    }
+    tensors.update(
+        {
+            "prompts": data.batch["critic_prompts"],
+            "input_ids": data.batch["critic_input_ids"],
+            "attention_mask": data.batch["critic_attention_mask"],
+            "position_ids": data.batch["critic_position_ids"],
+        }
+    )
+    meta_info = dict(data.meta_info)
+    meta_info["global_token_num"] = data.batch["critic_attention_mask"].sum(dim=-1).tolist()
+    return DataProto.from_dict(
+        tensors=tensors,
+        non_tensors=data.non_tensor_batch,
+        meta_info=meta_info,
+    )
+
+
+def without_critic_inputs(data: DataProto) -> DataProto:
+    """Return a zero-copy view that cannot expose critic-only token tensors."""
+    tensors = {key: value for key, value in data.batch.items() if not key.startswith("critic_")}
+    return DataProto.from_dict(
+        tensors=tensors,
+        non_tensors=data.non_tensor_batch,
+        meta_info=dict(data.meta_info),
+    )
+
+
+def append_critic_row_log(data: DataProto, *, global_step: int) -> None:
+    """Persist compact row-level critic targets/predictions for offline diagnosis."""
+    log_path = os.getenv("VERL_CRITIC_ROW_LOG_PATH")
+    if not log_path:
+        return
+    required = {"values", "returns", "advantages", "rewards", "done", "response_mask"}
+    missing = sorted(required.difference(data.batch.keys()))
+    if missing:
+        raise KeyError(f"critic row logging requires tensors: {missing}")
+
+    def _field(name, index, default=None):
+        values = data.non_tensor_batch.get(name)
+        if values is None:
+            return default
+        value = values[index]
+        return value.item() if isinstance(value, np.generic) else value
+
+    values_s0 = data.batch["values"][:, 0].detach().cpu().tolist()
+    returns_s0 = data.batch["returns"][:, 0].detach().cpu().tolist()
+    advantages_s0 = data.batch["advantages"][:, 0].detach().cpu().tolist()
+    rewards = data.batch["rewards"].detach().cpu().tolist()
+    dones = data.batch["done"].detach().cpu().tolist()
+    response_tokens = data.batch["response_mask"].sum(dim=-1).detach().cpu().tolist()
+
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for index in range(len(data)):
+            env_idx = _field("env_idx", index)
+            episode_index = _field("episode_index", index)
+            row = {
+                "schema_version": 1,
+                "global_step": global_step,
+                "env_idx": env_idx,
+                "episode_index": episode_index,
+                "episode_uid": f"step{global_step}:env{env_idx}:episode{episode_index}",
+                "episode_turn_id": _field("episode_turn_id", index),
+                "turn_id": _field("turn_id", index),
+                "agent_id": _field("agent_id", index),
+                "is_bootstrap": bool(_field("is_bootstrap", index, False)),
+                "done": bool(dones[index]),
+                "reward": float(rewards[index]),
+                "value_s0": float(values_s0[index]),
+                "return_s0": float(returns_s0[index]),
+                "advantage_s0": float(advantages_s0[index]),
+                "response_tokens": int(response_tokens[index]),
+                "actor_prompt_tokens": _field("actor_prompt_tokens", index),
+                "critic_prompt_tokens": _field("critic_prompt_tokens", index),
+                "critic_observation_mode": _field("critic_observation_mode", index),
+            }
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 def get_episode_structure(episode_idx: np.ndarray):
     """
@@ -380,6 +484,7 @@ class RayPPOTrainer:
         collate_fn=None,
         train_sampler: Optional[Sampler] = None,
         device_name=None,
+        config_provenance=None,
     ):
         """
         Initialize distributed PPO trainer with Ray backend.
@@ -399,12 +504,14 @@ class RayPPOTrainer:
             collate_fn: Function to collate data samples into batches.
             train_sampler (Optional[Sampler], optional): Sampler for the training dataset. Defaults to None.
             device_name (str, optional): Device name for training (e.g., "cuda", "cpu"). Defaults to None.
+            config_provenance: Optional Hydra original-config and override metadata for experiment tracking.
         """
 
         # Store the tokenizer for text processing
         self.tokenizer = tokenizer
         self.processor = processor
         self.config = config
+        self.config_provenance = config_provenance
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
 
@@ -1108,23 +1215,38 @@ class RayPPOTrainer:
         return batch, {}
 
     def fit(self):
+        """Run PPO training and always close experiment tracking explicitly."""
+        from omegaconf import OmegaConf
+
+        from verl.utils.tracking import Tracking
+
+        tracking_config = OmegaConf.to_container(self.config, resolve=True)
+        if self.config_provenance is not None:
+            tracking_config["config_provenance"] = self.config_provenance
+
+        logger = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+            default_backend=self.config.trainer.logger,
+            config=tracking_config,
+        )
+
+        exit_code = 0
+        try:
+            return self._fit(logger)
+        except BaseException:
+            exit_code = 1
+            raise
+        finally:
+            logger.finish(exit_code=exit_code)
+
+    def _fit(self, logger):
         """
         The training loop of PPO.
         The driver process only need to call the compute functions of the worker group through RPC
         to construct the PPO dataflow.
         The light-weight advantage computation is done on the driver process.
         """
-        from omegaconf import OmegaConf
-
-        from verl.utils.tracking import Tracking
-
-        logger = Tracking(
-            project_name=self.config.trainer.project_name,
-            experiment_name=self.config.trainer.experiment_name,
-            default_backend=self.config.trainer.logger,
-            config=OmegaConf.to_container(self.config, resolve=True),
-        )
-
         self.global_steps = 0
 
         # load checkpoint before doing anything
@@ -1267,7 +1389,7 @@ class RayPPOTrainer:
 
                     # recompute old_log_probs
                     with marked_timer("old_log_prob", timing_raw, color="blue"):
-                        old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
+                        old_log_prob = self.actor_rollout_wg.compute_log_prob(without_critic_inputs(batch))
                         entropys = old_log_prob.batch["entropys"]
                         response_masks = batch.batch["response_mask"]
                         loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
@@ -1287,15 +1409,15 @@ class RayPPOTrainer:
                         # compute reference log_prob
                         with marked_timer("ref", timing_raw, color="olive"):
                             if not self.ref_in_actor:
-                                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(without_critic_inputs(batch))
                             else:
-                                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
+                                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(without_critic_inputs(batch))
                             batch = batch.union(ref_log_prob)
 
                     # compute values
                     if self.use_critic:
                         with marked_timer("values", timing_raw, color="cyan"):
-                            values = self.critic_wg.compute_values(batch)
+                            values = self.critic_wg.compute_values(as_critic_input(batch))
                             batch = batch.union(values)
 
                     with marked_timer("adv", timing_raw, color="brown"):
@@ -1347,23 +1469,58 @@ class RayPPOTrainer:
                             norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
                             config=self.config.algorithm,
                         )
+                        append_critic_row_log(batch, global_step=self.global_steps)
                     
                     # the last turn for each episode (parallel environment) is only used for bootstrapping the value,
                     if _has_agent_id(batch.non_tensor_batch) and "turn_id" in batch.non_tensor_batch:
                         batch4train = remove_last_turn_in_episode_multiagent(batch)
                     else:
                         batch4train = remove_last_turn_in_episode(batch)
+
+                    # A critic probe is a fixed-label regression test. Only
+                    # naturally completed episodes have the injected +/-1
+                    # return; unfinished fragments bootstrap from the current
+                    # value model and must not enter the probe critic update.
+                    critic_batch = batch4train
+                    probe_indices = get_completed_critic_probe_indices(critic_batch.non_tensor_batch)
+                    critic_probe_active = probe_indices is not None
+                    if probe_indices is not None:
+                        metrics["critic_probe/train_rows_before_filter"] = float(len(critic_batch))
+                        critic_batch = critic_batch.select_idxs(probe_indices)
+                        metrics["critic_probe/train_rows"] = float(len(critic_batch))
+
                     # from step 2 to step `critic_warmup`, we only update the critic, and only use part of the batch
                     if self.config.trainer.critic_warmup >= self.global_steps:
                         ratio = self.config.trainer.critic_warmup_batch_divide_ratio
-                        num_indices = max(1, int(len(batch4train) / ratio))
-                        indices_to_keep = torch.randperm(len(batch4train))[:num_indices]
-                        batch4train = batch4train.select_idxs(indices_to_keep)
+                        num_indices = max(1, int(len(critic_batch) / ratio))
+                        indices_to_keep = torch.randperm(len(critic_batch))[:num_indices]
+                        critic_batch = critic_batch.select_idxs(indices_to_keep)
+
+                    if critic_probe_active:
+                        # FSDP ranks must execute the same number of critic
+                        # microbatches or one rank can leave the others stuck
+                        # in a collective. Filtering completed episodes makes
+                        # the row count irregular, so pad to a whole number of
+                        # per-rank microbatches. Duplicate padding rows affect
+                        # only the update; probe metrics use the original batch.
+                        critic_micro_batch_size = self.config.critic.ppo_micro_batch_size_per_gpu
+                        critic_batch_divisor = self.critic_wg.world_size
+                        if not self.config.critic.use_dynamic_bsz:
+                            if critic_micro_batch_size is None:
+                                raise ValueError("critic probe requires a configured critic micro batch size")
+                            critic_batch_divisor *= int(critic_micro_batch_size)
+                        unpadded_critic_rows = len(critic_batch)
+                        critic_batch, critic_pad_rows = pad_dataproto_to_divisor(
+                            critic_batch, critic_batch_divisor
+                        )
+                        metrics["critic_probe/update_rows_unpadded"] = float(unpadded_critic_rows)
+                        metrics["critic_probe/padding_rows"] = float(critic_pad_rows)
+                        metrics["critic_probe/update_rows"] = float(len(critic_batch))
 
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
-                            critic_output = self.critic_wg.update_critic(batch4train)
+                            critic_output = self.critic_wg.update_critic(as_critic_input(critic_batch))
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
@@ -1372,7 +1529,7 @@ class RayPPOTrainer:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
-                            actor_output = self.actor_rollout_wg.update_actor(batch4train)
+                            actor_output = self.actor_rollout_wg.update_actor(without_critic_inputs(batch4train))
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
 

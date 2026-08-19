@@ -18,6 +18,7 @@ A unified tracking interface that supports logging data to different backend
 import dataclasses
 import json
 import os
+import warnings
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -52,13 +53,12 @@ class Tracking:
             default_backend = [default_backend]
         for backend in default_backend:
             if backend == "tracking":
-                import warnings
-
                 warnings.warn("`tracking` logger is deprecated. use `wandb` instead.", DeprecationWarning, stacklevel=2)
             else:
                 assert backend in self.supported_backend, f"{backend} is not supported"
 
         self.logger = {}
+        self._finished = False
 
         if "tracking" in default_backend or "wandb" in default_backend:
             import wandb
@@ -152,21 +152,34 @@ class Tracking:
             if backend is None or default_backend in backend:
                 logger_instance.log(data=data, step=step)
 
+    def finish(self, exit_code=0):
+        """Flush and close every configured backend exactly once."""
+        if getattr(self, "_finished", True):
+            return
+
+        self._finished = True
+        exit_code_backends = {"wandb", "vemlp_wandb"}
+        finish_backends = {"wandb", "swanlab", "vemlp_wandb", "tensorboard", "clearml", "trackio", "file"}
+        for backend, logger_instance in self.logger.items():
+            if backend not in finish_backends:
+                continue
+            try:
+                if backend in exit_code_backends:
+                    logger_instance.finish(exit_code=exit_code)
+                else:
+                    logger_instance.finish()
+            except Exception as exc:
+                warnings.warn(
+                    f"Failed to finish {backend} tracking cleanly: {exc}", RuntimeWarning, stacklevel=2
+                )
+
     def __del__(self):
-        if "wandb" in self.logger:
-            self.logger["wandb"].finish(exit_code=0)
-        if "swanlab" in self.logger:
-            self.logger["swanlab"].finish()
-        if "vemlp_wandb" in self.logger:
-            self.logger["vemlp_wandb"].finish(exit_code=0)
-        if "tensorboard" in self.logger:
-            self.logger["tensorboard"].finish()
-        if "clearml" in self.logger:
-            self.logger["clearml"].finish()
-        if "trackio" in self.logger:
-            self.logger["trackio"].finish()
-        if "file" in self.logger:
-            self.logger["file"].finish()
+        # A best-effort fallback for callers outside the trainer. The PPO trainer
+        # finishes explicitly while backend services and event loops are alive.
+        try:
+            self.finish(exit_code=0)
+        except Exception:
+            pass
 
 
 class ClearMLLogger:

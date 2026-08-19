@@ -67,9 +67,20 @@ class CustomAsyncServerConfig(BaseConfig):
 @dataclass
 class AgentLoopConfig(BaseConfig):
     num_workers: int = 8
+    # Each agent-loop worker owns a reward-manager actor. Reserving one full
+    # Ray CPU per actor can deadlock startup when num_workers approaches the
+    # Slurm CPU allocation because the trainer and rollout services also need
+    # CPUs. Reward computation is lightweight and may share a core.
+    reward_manager_num_cpus: float = 0.25
     default_agent_loop: str = "single_turn_agent"
     agent_loop_config_path: Optional[str] = None
     custom_async_server: CustomAsyncServerConfig = field(default_factory=CustomAsyncServerConfig)
+
+    def __post_init__(self):
+        if self.reward_manager_num_cpus < 0:
+            raise ValueError(
+                f"reward_manager_num_cpus must be non-negative, got {self.reward_manager_num_cpus}"
+            )
 
 
 @dataclass
