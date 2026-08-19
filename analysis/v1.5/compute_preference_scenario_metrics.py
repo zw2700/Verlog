@@ -20,7 +20,14 @@ from typing import Any
 V1_DIR = Path(__file__).resolve().parents[1] / "v1"
 sys.path.insert(0, str(V1_DIR))
 
-from compute_category_metrics import as_int, categorize_episode, in_step_range  # noqa: E402
+from compute_category_metrics import (  # noqa: E402
+    as_int,
+    categorize_episode,
+    episode_log_files,
+    in_step_range,
+    markdown_table,
+    read_jsonl,
+)
 
 
 PROFESSOR_PAIRS = (
@@ -38,18 +45,6 @@ SCENARIO_ORDER = [
     "multi_pair_without_all_three_common_top",
     "malformed_or_missing_preferences",
 ]
-
-
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows = []
-    with path.open() as f:
-        for line_no, line in enumerate(f, start=1):
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            row["_source_line"] = line_no
-            rows.append(row)
-    return rows
 
 
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -148,6 +143,7 @@ def build_episode_rows(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         category, category_reason, features = categorize_episode(ep)
         scenario, scenario_features = preference_scenario(ep)
         row = {
+            "source_path": ep.get("_source_path"),
             "source_line": ep.get("_source_line"),
             "episode_uid": ep.get("episode_uid"),
             "global_step": ep.get("global_step"),
@@ -384,10 +380,12 @@ def write_outputs(
     write_csv(out_dir / "preference_scenario_metrics_summary.csv", scenario_summary)
     write_csv(out_dir / "preference_scenario_category_breakdown.csv", scenario_category_summary)
 
+    source_files = episode_log_files(args.episode_log)
     lines = [
         "# Preference Scenario Metrics Summary",
         "",
         f"- episode_log: `{args.episode_log}`",
+        f"- episode_log files read: `{len(source_files)}`",
         f"- global_step range: `{args.step_start}` to `{args.step_end}`",
         f"- episodes analyzed: `{len(episode_rows)}`",
         "",
@@ -410,27 +408,27 @@ def write_outputs(
                 f"- percent of analyzed episodes: `{fmt(summary['percent'])}`",
                 f"- consensus rate: `{fmt(summary['consensus_rate'])}`",
                 f"- SO rate: `{fmt(summary['socially_optimal_rate'])}`",
-                f"- SO|cons rate: `{fmt(summary['socially_optimal_given_consensus_rate'])}`",
+                f"- SO given consensus rate: `{fmt(summary['socially_optimal_given_consensus_rate'])}`",
                 "",
-                "| Category | Episodes | % | Consensus | SO | SO|cons | Avg eff | Avg rank | Avg tokens | Avg turns |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
-        for row in table:
-            lines.append(
-                "| {category} | {episodes} | {percent} | {consensus} | {so} | {so_cons} | {eff} | {rank} | {tokens} | {turns} |".format(
-                    category=row["category"],
-                    episodes=row["episodes"],
-                    percent=fmt(row["percent"]),
-                    consensus=fmt(row["consensus_rate"]),
-                    so=fmt(row["socially_optimal_rate"]),
-                    so_cons=fmt(row["socially_optimal_given_consensus_rate"]),
-                    eff=fmt(row["avg_social_welfare_efficiency"]),
-                    rank=fmt(row["avg_chosen_student_rank_global_consensus_only"]),
-                    tokens=fmt(row["avg_tokens_used"], 1),
-                    turns=fmt(row["avg_total_turns"], 1),
-                )
-            )
+        headers = ["Category", "Episodes", "%", "Consensus", "SO", "SO given cons", "Avg eff", "Avg rank", "Avg tokens", "Avg turns"]
+        rows = [
+            [
+                row["category"],
+                row["episodes"],
+                fmt(row["percent"]),
+                fmt(row["consensus_rate"]),
+                fmt(row["socially_optimal_rate"]),
+                fmt(row["socially_optimal_given_consensus_rate"]),
+                fmt(row["avg_social_welfare_efficiency"]),
+                fmt(row["avg_chosen_student_rank_global_consensus_only"]),
+                fmt(row["avg_tokens_used"], 1),
+                fmt(row["avg_total_turns"], 1),
+            ]
+            for row in table
+        ]
+        lines.extend(markdown_table(headers, rows, right_align=set(range(1, len(headers)))))
         lines.append("")
 
     lines.append("")
@@ -439,7 +437,7 @@ def write_outputs(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--episode-log", required=True, type=Path, help="Path to episode_log_*.jsonl")
+    parser.add_argument("--episode-log", required=True, type=Path, help="Path to episode_log_*.jsonl or a sharded episode-log directory")
     parser.add_argument("--step-start", type=int, default=None, help="Inclusive global_step lower bound")
     parser.add_argument("--step-end", type=int, default=None, help="Inclusive global_step upper bound")
     parser.add_argument("--out-dir", required=True, type=Path, help="Directory for output artifacts")

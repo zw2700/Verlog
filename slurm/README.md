@@ -12,8 +12,9 @@ resolved values are captured in W&B.
 
 ```text
 configs/
-  train_auton.yaml            # canonical training configuration
-  env/auton_admissions.yaml   # hiring environment configuration
+  train_auton.yaml                 # canonical training configuration
+  env/auton_admissions.yaml        # hiring environment configuration
+  checkpointing/critic_only.yaml   # optional sparse critic checkpoints
 slurm/
   common.sh                   # private env, GPU, CPU, cache, and Ray setup
   train_auton.sbatch          # only supported Rhea training entrypoint
@@ -71,6 +72,20 @@ sbatch slurm/train_auton.sbatch \
 Keep one experimental change per job unless the experiment explicitly requires
 a coupled intervention.
 
+Dynamic token batching and the `repeat=10`, `divide=1` critic warmup safeguards
+are baseline settings in `configs/train_auton.yaml`. To additionally save sparse
+critic-model-only snapshots at steps 1, 5, 10, 30, and 75, compose the optional
+checkpointing policy:
+
+```bash
+sbatch slurm/train_auton.sbatch tag=critic-only +checkpointing=critic_only
+```
+
+This produces `unscripted_auton_critic-only_<jobid>`. These checkpoints omit the
+actor, optimizer, and trainer state and therefore cannot resume training. Add a
+direct Hydra override after the policy only when intentionally changing one of
+its values.
+
 ## Sweeps
 
 Submit each sweep cell as an independent canonical Slurm job:
@@ -91,11 +106,15 @@ This keeps every allocation, resolved config, W&B run, and failure independent.
 
 - loads `slurm/auton.env` before validating required paths;
 - preserves the GPU list assigned by Slurm;
+- requeues allocations whose GPUs span NUMA sockets, excluding each fragmented
+  node, unless `ALLOW_SPLIT_GPUS=1` is explicitly configured;
 - derives `trainer.n_gpus_per_node` from the allocation;
 - passes `SLURM_CPUS_PER_TASK` to `ray.init()`;
 - creates job-scoped temporary and Ray directories;
 - never stops or deletes Ray state belonging to another job;
 - accepts standard W&B login state or `WANDB_API_KEY`.
+- writes checkpoints under `CHECKPOINT_ROOT` when configured, otherwise under
+  the project checkout.
 
 The launcher writes Slurm output to `logs/auton_<jobid>.out` and
 `logs/auton_<jobid>.err`. Training logs and artifacts remain under the shared

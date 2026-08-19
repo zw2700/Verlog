@@ -176,6 +176,18 @@ trainer:
   # Save frequency (by iteration) for model checkpoints
   save_freq: -1
 
+  # Save offset for periodic checkpoints. With save_freq=5 and save_freq_offset=4,
+  # checkpoints are saved at global_step_4, global_step_9, global_step_14, ...
+  save_freq_offset: 0
+
+  # Optional explicit checkpoint steps. These are saved in addition to periodic checkpoints.
+  # Set save_freq=-1 with save_steps=[...] for sparse probe checkpoints only.
+  save_steps: null
+
+  # Select which trainable modules to write when saving checkpoints.
+  save_actor_checkpoint: True
+  save_critic_checkpoint: True
+
   # ESI refers to the elastic server instance used during training, similar to the training plan. For example,
   # if you purchase 10 hours of computing power, the ESI will automatically shut down after 10 hours of training.
   # To ensure a checkpoint is saved before ESI shuts down, the system will start saving a checkpoint in advance.

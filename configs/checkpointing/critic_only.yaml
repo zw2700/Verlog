@@ -1,0 +1,16 @@
+# @package _global_
+
+# Sparse critic-model snapshots for analysis. These checkpoints intentionally
+# omit the actor, optimizer, and trainer state, so they cannot resume training.
+
+critic:
+  checkpoint:
+    save_contents: ["model"]
+    load_contents: ["model"]
+
+trainer:
+  save_freq: -1
+  save_steps: [1, 5, 10, 30, 75]
+  save_actor_checkpoint: false
+  save_critic_checkpoint: true
+  default_local_dir: ${oc.env:CHECKPOINT_ROOT,checkpoints}/${trainer.project_name}/${trainer.experiment_name}
