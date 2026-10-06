@@ -47,6 +47,16 @@ Conventions for agents:
 - List values (e.g. `professor_ids`) are passed quoted:
   `envs.env_config.professor_ids='["prof_1","prof_2"]'`.
 
+### Binary social-optimum reward
+
+`envs.env_config.reward_mode=binary_social_optimum` selects the parent-repo
+environment subclass in `verl/envs/hiring_env_wrapper.py`. All professors receive
+1 only for consensus on a student maximizing the sum of unrounded utilities,
+including exact ties; other outcomes receive 0. Both `format_penalty` and
+`invalid_action_penalty` must be zero in this mode. PPO KL regularization is
+configured separately. Vanilla mechanics, observations, and welfare metrics are
+preserved. See `docs/binary_social_optimum_experiment.md` for the run specification.
+
 ### Sweeps (grids)
 
 Prefer a loop of independent Slurm jobs, one `tag` per cell, so each cell is its own

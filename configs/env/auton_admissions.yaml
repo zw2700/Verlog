@@ -17,6 +17,11 @@ env_config:
   feature_dim: 5
   vote_threshold: 0.5
   max_steps: 50
+  # binary_social_optimum: shared 1 for welfare-maximizing consensus, else 0.
+  # That mode requires both penalties below to be overridden to zero.
+  reward_mode: individual
+  format_penalty: 0.1
+  invalid_action_penalty: 0.1
   terminate_on_all_voted_no_consensus: false
   professor_preference_mode: random_permutation
   preference_correlation_threshold: 0.0

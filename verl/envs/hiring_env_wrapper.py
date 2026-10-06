@@ -10,6 +10,34 @@ from typing import Any, Dict, List, Optional, Tuple
 from verl.envs.hiring_env.env import AsyncTickerAdmissionsEnv
 
 
+class BinarySocialOptimumAdmissionsEnv(AsyncTickerAdmissionsEnv):
+    """Vanilla admissions mechanics with a shared exact-optimum task reward.
+
+    Any student tied for the maximum unrounded collective utility succeeds.
+    Near-optimal choices and episodes without consensus receive zero. Override
+    the terminal reward before the environment builds its metrics and logs.
+    """
+
+    def __init__(self, config: Dict[str, Any], tokenizer=None):
+        super().__init__(config, tokenizer=tokenizer)
+        if self.format_penalty != 0 or self.invalid_action_penalty != 0:
+            raise ValueError(
+                "binary_social_optimum requires format_penalty=0 and "
+                "invalid_action_penalty=0 for a strictly binary task reward"
+            )
+
+    def _calculate_rewards(self) -> Dict[str, float]:
+        success = False
+        if self.episode_state["consensus_reached"]:
+            choice = self._get_valid_final_choice()
+            if choice is not None:
+                utilities = self._get_collective_utilities(
+                    self._get_student_utilities_by_agent()
+                )
+                success = utilities[choice] == max(utilities)
+        return {agent_id: float(success) for agent_id in self.professor_ids}
+
+
 class AsyncTickerEnvWrapper(gym.Wrapper):
     """
     VERL wrapper for AsyncTickerAdmissionsEnv.
@@ -86,7 +114,7 @@ def make_async_ticker_env(config: Dict[str, Any], tokenizer=None) -> AsyncTicker
             - feature_dim: int (default 5)
             - vote_threshold: float (default 0.5)
             - max_steps: int (optional)
-            - reward_mode: str ("individual"/"group"/"combined")
+            - reward_mode: str ("individual"/"group"/"combined"/"binary_social_optimum")
             - reward_alpha: float (for "combined" mode)
             - system_prompt: str or Dict[str, str]
             - prompt_length: int (optional, for token-based truncation)
@@ -97,5 +125,10 @@ def make_async_ticker_env(config: Dict[str, Any], tokenizer=None) -> AsyncTicker
     Returns:
         Wrapped environment ready for VERL training
     """
-    env = AsyncTickerAdmissionsEnv(config, tokenizer=tokenizer)
+    env_class = (
+        BinarySocialOptimumAdmissionsEnv
+        if config.get("reward_mode") == "binary_social_optimum"
+        else AsyncTickerAdmissionsEnv
+    )
+    env = env_class(config, tokenizer=tokenizer)
     return AsyncTickerEnvWrapper(env)
