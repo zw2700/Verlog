@@ -351,6 +351,12 @@ srun <options>
 - Use `tmux` for long interactive `srun` sessions.
 - Create `logs/` before job launch so Slurm can open stdout/stderr files.
 - Keep W&B/HF/API secrets out of committed sbatch files; source private env files or use host-local key files.
+- Use plain `--export=ALL` (or its default), with `PROJECT_DIR` set in the
+  submitting process environment if needed. Do not use `--export=ALL,PROJECT_DIR=...`:
+  a variable list implicitly enables Slurm's `--get-user-env` behavior. On Rhea
+  this caused jobs 74713–74715 to abort before the launcher and become
+  `user_env_retrieval_failed_requeued_held`. A held job needs explicit recovery;
+  it will not start merely by waiting in the queue.
 
 ## Preempt Partition
 
