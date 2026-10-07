@@ -236,7 +236,8 @@ def make_async_ticker_env(config: dict[str, Any], tokenizer=None) -> AsyncTicker
             - feature_dim: int (default 5)
             - vote_threshold: float (default 0.5)
             - max_steps: int (optional)
-            - reward_mode: str ("individual"/"group"/"combined")
+            - reward_mode: individual/group/combined/binary_individual/binary_social_optimum
+            - reward_optimum_atol: optional absolute tolerance for optimum ties
             - reward_alpha: float (for "combined" mode)
             - system_prompt: str or Dict[str, str]
             - prompt_length: int (optional, for token-based truncation)
@@ -254,7 +255,14 @@ def make_async_ticker_env(config: dict[str, Any], tokenizer=None) -> AsyncTicker
     env_config = dict(config)
     critic_probe_mode = str(env_config.pop("critic_probe_mode", "off"))
     critic_probe_seed = env_config.pop("critic_probe_seed", None)
-    env = AsyncTickerAdmissionsEnv(env_config, tokenizer=tokenizer)
+    env_class = AsyncTickerAdmissionsEnv
+    if "reward_optimum_atol" in env_config or env_config.get("reward_mode") in {
+        "binary_individual", "binary_social_optimum"
+    }:
+        from verl.envs.hiring_reward_modes import RewardComparisonAdmissionsEnv
+
+        env_class = RewardComparisonAdmissionsEnv
+    env = env_class(env_config, tokenizer=tokenizer)
     return AsyncTickerEnvWrapper(
         env,
         critic_probe_mode=critic_probe_mode,

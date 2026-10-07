@@ -73,6 +73,18 @@ done
   every job using it has finished. Cells in one matched experiment may share one
   immutable worktree when they use the exact same commit.
 
+### Reward comparison
+
+`+experiment=reward_comparison` matches the historical `amtaz7fo` warm10
+baseline. Set an explicit `envs.env_config.reward_mode` and matching `tag`:
+`individual`, `group`, `binary_individual`, or `binary_social_optimum`.
+Binary means terminal selection reward; retain the baseline's 0.1 per-action
+penalties and PPO KL regularization in all conditions. The parent-repo subclass
+uses absolute tolerance 1e-9 for binary optimum checks and rank metrics, without
+changing prompts, turn order, or the environment submodule. See
+`docs/reward_comparison_experiment.md`. Completion metrics are cleared on every
+nonterminal step so W&B counts each finished game only once.
+
 ### Asymmetric critic observations
 
 `critic_observation.mode=actor_visible` gives the value critic exactly the actor

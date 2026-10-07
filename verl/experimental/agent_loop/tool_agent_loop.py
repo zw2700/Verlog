@@ -811,8 +811,9 @@ class ToolAgentLoop(AgentLoopBase):
             
             # Update metrics with info and loop tracking
             step_env_metrics = _flat_info.get("metrics", {})
-            if step_env_metrics:
-                metrics["env_metrics"] = step_env_metrics
+            # These are completion events, not persistent episode state. Always
+            # replace them so the next game's turns cannot repeat the last game.
+            metrics["env_metrics"] = step_env_metrics
             metrics["loop_counts"] = 1.0 if is_loop else 0.0
             metrics["loop_rate"] = all_loop_counts / (num_turns + 1) if (num_turns + 1) > 0 else 0.0
             

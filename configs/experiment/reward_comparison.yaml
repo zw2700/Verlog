@@ -1,0 +1,35 @@
+# @package _global_
+# Match unscripted/amtaz7fo (base-warm10), varying terminal reward only.
+# Compose with +experiment=reward_comparison and an explicit reward_mode/tag.
+envs:
+  env_config:
+    reward_mode: individual
+    reward_optimum_atol: 1.0e-9
+    format_penalty: 0.1
+    invalid_action_penalty: 0.1
+
+critic_observation:
+  mode: actor_visible
+
+actor_rollout_ref:
+  actor:
+    ppo_micro_batch_size_per_gpu: 2
+    use_dynamic_bsz: false
+    ppo_max_token_len_per_gpu: 16384
+
+critic:
+  ppo_micro_batch_size_per_gpu: 4
+  use_dynamic_bsz: false
+  ppo_max_token_len_per_gpu: 16384
+
+trainer:
+  critic_warmup: 10
+  critic_warmup_batch_repeat_times: 1
+  critic_warmup_batch_divide_ratio: 1
+  total_training_steps: 75
+  # Retain final checkpoints for common held-out evaluation after training.
+  # No pre-training validation, preserving the baseline's RNG progression.
+  val_before_train: false
+  test_freq: 75
+  save_freq: 75
+  resume_mode: disable
