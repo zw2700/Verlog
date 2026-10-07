@@ -5,6 +5,7 @@ import types
 import importlib.util
 
 import numpy as np
+import pytest
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
@@ -55,6 +56,47 @@ def _metrics(env):
     rewards = env._calculate_rewards()
     metrics = env._calculate_episode_metrics(rewards)
     return metrics, env._flatten_metrics_for_logging(metrics)
+
+
+def test_discussion_bonus_rewards_first_valid_group_only_turn_before_vote():
+    env = AsyncTickerAdmissionsEnv({
+        "professor_ids": ["prof_a", "prof_b", "prof_c"],
+        "students_per_batch": 3,
+        "token_budget": 100,
+        "feature_dim": 3,
+        "vote_threshold": 1.0,
+        "discussion_bonus": 0.1,
+        "seed": 7,
+    })
+    env.reset()
+
+    _, rewards, _, _, infos = env.step(
+        "<THINK>I should ask first.</THINK><GROUP>Which student do you prefer?</GROUP>"
+    )
+
+    assert rewards["prof_a"] == pytest.approx(0.1)
+    assert infos["prof_a"]["episode_state"]["discussion_bonus_claimed"] == ["prof_a"]
+
+
+def test_discussion_bonus_does_not_reward_group_and_vote_same_turn():
+    env = AsyncTickerAdmissionsEnv({
+        "professor_ids": ["prof_a", "prof_b", "prof_c"],
+        "students_per_batch": 3,
+        "token_budget": 100,
+        "feature_dim": 3,
+        "vote_threshold": 1.0,
+        "discussion_bonus": 0.1,
+        "seed": 7,
+    })
+    env.reset()
+
+    _, rewards, _, _, infos = env.step(
+        "<THINK>I will propose and vote.</THINK>"
+        "<GROUP>I prefer Student 1.</GROUP><VOTE>1</VOTE>"
+    )
+
+    assert rewards["prof_a"] == 0.0
+    assert infos["prof_a"]["episode_state"]["discussion_bonus_claimed"] == []
 
 
 def test_outcome_quality_and_satisfaction_metrics_for_final_choice():

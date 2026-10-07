@@ -128,6 +128,7 @@ ENV/
 logs
 log
 outputs
+artifacts/
 .history
 
 *.whl*

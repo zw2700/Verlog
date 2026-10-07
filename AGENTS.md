@@ -92,9 +92,17 @@ Be precise about terminology:
 - `examples/sglang_multiturn/config/`: Upstream VERL examples retained for reference. Rhea training uses `configs/train_auton.yaml`.
 - `analysis/`: Research analysis artifacts, category labels, preference-scenario summaries, plots, and report scripts.
 - `scripts/rollout_frontier.py`: Frontier/API model rollouts for the hiring env.
+- `scripts/launch_zero_shot_matrix.py`: Reproducible four-cell launcher for the
+  Qwen3-4B zero-shot thinking × temperature inference experiment. It is a dry
+  run unless `--submit` is passed.
 - `scripts/rollout_viewer.py`: Local inspection utility for rollout logs.
 - `monitor/`: Claude/W&B/Slurm monitor scaffolding.
 - `.agents/skills/`: Canonical repo-local skills. Use `slurm` for Rhea/Auton Slurm and `wandb` for W&B run inspection. `.claude/skills` is a symlink to this directory so Claude Code sees the same skills; edit skills only under `.agents/skills/`.
+
+The zero-shot thinking experiment runbook is
+`docs/zero_shot_thinking_temperature.md`. Its GPU rollouts use
+`rollout_local_vllm_frank.sbatch`; this is an inference launcher, not an
+alternative training entrypoint.
 
 ## Build, Test, and Development Commands
 

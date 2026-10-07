@@ -1,0 +1,817 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zero-shot reasoning mode × temperature</title>
+  <style>
+    :root {
+      --ink: #16202a;
+      --muted: #5c6975;
+      --line: #d7dde2;
+      --grid: #e9edf0;
+      --manual: #245b8a;
+      --comparison: #b44a34;
+      --paper: #ffffff;
+      --note: #f5f7f8;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #eef1f3;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .deck { width: 100%; height: 100%; }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: none;
+      width: 100vw;
+      height: 100vh;
+      padding: clamp(42px, 5.2vh, 68px) clamp(58px, 6.5vw, 112px) clamp(48px, 6vh, 78px);
+      background: var(--paper);
+    }
+
+    .slide.active { display: block; }
+
+    .kicker {
+      margin-bottom: 18px;
+      color: var(--muted);
+      font-size: clamp(14px, 1.15vw, 18px);
+      font-weight: 650;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 1180px;
+      margin: 0 0 28px;
+      font-size: clamp(42px, 4.1vw, 66px);
+      line-height: 1.08;
+      letter-spacing: -.035em;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: clamp(25px, 2.1vw, 34px);
+      line-height: 1.18;
+      letter-spacing: -.015em;
+    }
+
+    p, li, td, th {
+      font-size: clamp(18px, 1.48vw, 24px);
+      line-height: 1.38;
+    }
+
+    p { margin: 0 0 16px; }
+    strong { font-weight: 720; }
+
+    .lead {
+      max-width: 1120px;
+      margin-top: 42px;
+      font-size: clamp(27px, 2.45vw, 40px);
+      line-height: 1.3;
+    }
+
+    .question {
+      max-width: 1030px;
+      color: var(--muted);
+      font-size: clamp(21px, 1.8vw, 30px);
+    }
+
+    .hypothesis {
+      max-width: 1120px;
+      margin-bottom: 14px;
+      font-size: clamp(22px, 1.75vw, 29px);
+      line-height: 1.34;
+    }
+
+    .rule {
+      width: 76px;
+      height: 4px;
+      margin: 34px 0;
+      background: var(--manual);
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(38px, 5vw, 86px);
+      align-items: start;
+    }
+
+    .method-table, .outcome-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .method-table th, .method-table td,
+    .outcome-table th, .outcome-table td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+    }
+
+    .method-table th:first-child, .method-table td:first-child,
+    .outcome-table th:first-child, .outcome-table td:first-child {
+      text-align: left;
+    }
+
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .results-table th, .results-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: right;
+      font-size: clamp(15px, 1.16vw, 19px);
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .results-table th:first-child, .results-table td:first-child {
+      width: 21%;
+      text-align: left;
+    }
+
+    .results-table tbody tr:nth-child(3) td {
+      border-top: 2px solid #aeb8c0;
+    }
+
+    .quality-note {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: clamp(15px, 1.15vw, 18px);
+      line-height: 1.35;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 27px;
+    }
+
+    li { margin: 0 0 14px; }
+
+    .note {
+      margin-top: 24px;
+      padding: 16px 20px;
+      border-left: 4px solid var(--manual);
+      background: var(--note);
+      color: #32404d;
+      font-size: clamp(16px, 1.25vw, 20px);
+      line-height: 1.4;
+    }
+
+    .legend {
+      display: flex;
+      gap: 30px;
+      margin: 4px 0 18px 240px;
+      color: var(--muted);
+      font-size: clamp(15px, 1.15vw, 18px);
+    }
+
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      margin-right: 8px;
+      border-radius: 50%;
+      background: var(--manual);
+    }
+
+    .legend .comparison::before { background: var(--comparison); }
+
+    .dotplot {
+      width: 100%;
+      max-width: 1220px;
+    }
+
+    .plot-row {
+      display: grid;
+      grid-template-columns: 225px 1fr 220px;
+      gap: 16px;
+      align-items: center;
+      min-height: 67px;
+      border-top: 1px solid var(--line);
+    }
+
+    .plot-label {
+      font-size: clamp(18px, 1.35vw, 22px);
+      line-height: 1.2;
+    }
+
+    .track {
+      position: relative;
+      height: 34px;
+      background-image: linear-gradient(to right, var(--grid) 1px, transparent 1px);
+      background-size: 25% 100%;
+      border-bottom: 2px solid #aab4bc;
+    }
+
+    .track::before, .track::after {
+      position: absolute;
+      top: 36px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .track::before { content: "0"; left: 0; }
+    .track::after { content: "100%"; right: 0; }
+
+    .dot {
+      position: absolute;
+      top: 17px;
+      width: 17px;
+      height: 17px;
+      border: 3px solid white;
+      border-radius: 50%;
+      box-shadow: 0 0 0 2px currentColor;
+      transform: translate(-50%, -50%);
+    }
+
+    .dot.manual { color: var(--manual); background: var(--manual); }
+    .dot.comparison { color: var(--comparison); background: var(--comparison); }
+
+    .plot-values {
+      display: flex;
+      justify-content: flex-end;
+      gap: 18px;
+      font-variant-numeric: tabular-nums;
+      font-size: clamp(17px, 1.3vw, 21px);
+    }
+
+    .plot-values .manual { color: var(--manual); }
+    .plot-values .comparison { color: var(--comparison); }
+
+    .result {
+      margin-top: 34px;
+      font-size: clamp(22px, 1.8vw, 29px);
+      line-height: 1.35;
+    }
+
+    .mechanism-flow {
+      display: grid;
+      grid-template-columns: 1fr 48px 1fr 48px 1fr;
+      align-items: center;
+      margin: 8px 0 30px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .flow-step {
+      padding: 18px 8px 20px;
+      text-align: center;
+    }
+
+    .flow-step strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--comparison);
+      font-size: clamp(31px, 2.8vw, 45px);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .flow-step span {
+      color: #34414d;
+      font-size: clamp(17px, 1.3vw, 21px);
+      line-height: 1.25;
+    }
+
+    .flow-arrow {
+      color: #9aa5ae;
+      font-size: clamp(28px, 2.5vw, 40px);
+      text-align: center;
+    }
+
+    .insight-cols { gap: clamp(42px, 5.2vw, 78px); }
+
+    .insight-cols h2 { margin-bottom: 10px; }
+
+    .insight-cols p,
+    .insight-cols li {
+      font-size: clamp(17px, 1.34vw, 21px);
+      line-height: 1.34;
+    }
+
+    .insight-cols li { margin-bottom: 10px; }
+
+    .insight-close {
+      margin-top: 20px;
+      padding-top: 18px;
+      border-top: 2px solid var(--ink);
+      font-size: clamp(21px, 1.7vw, 27px);
+      line-height: 1.3;
+    }
+
+    .strat-legend {
+      display: flex;
+      justify-content: center;
+      gap: 24px;
+      margin: -4px 0 14px;
+      color: var(--muted);
+      font-size: clamp(14px, 1.05vw, 17px);
+    }
+
+    .strat-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 11px;
+      height: 11px;
+      margin-right: 7px;
+      background: var(--series-color);
+    }
+
+    .series-m10 { --series-color: #245b8a; }
+    .series-m13 { --series-color: #7aa6c9; }
+    .series-n10 { --series-color: #b44a34; }
+    .series-n13 { --series-color: #d68a78; }
+
+    .strat-panels {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: clamp(24px, 2.4vw, 38px);
+    }
+
+    .strat-panel h2 {
+      margin-bottom: 8px;
+      font-size: clamp(21px, 1.6vw, 26px);
+    }
+
+    .strat-axis {
+      display: flex;
+      justify-content: space-between;
+      margin: 0 45px 4px 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .strat-group { margin-bottom: 7px; }
+
+    .strat-label {
+      margin-bottom: 2px;
+      color: #34414d;
+      font-size: clamp(14px, 1.05vw, 17px);
+      font-weight: 650;
+      line-height: 1.2;
+    }
+
+    .strat-row {
+      display: grid;
+      grid-template-columns: 1fr 42px;
+      gap: 7px;
+      align-items: center;
+      min-height: 12px;
+      margin: 2px 0;
+    }
+
+    .strat-track {
+      height: 8px;
+      background: var(--grid);
+    }
+
+    .strat-bar {
+      height: 100%;
+      background: var(--series-color);
+    }
+
+    .strat-value {
+      color: #34414d;
+      font-size: clamp(12px, .92vw, 15px);
+      line-height: 1;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .strat-takeaway {
+      margin-top: 10px;
+      padding-top: 12px;
+      border-top: 2px solid var(--ink);
+      font-size: clamp(18px, 1.4vw, 23px);
+      line-height: 1.28;
+    }
+
+    .ratio-chart { margin-top: 10px; }
+
+    .ratio-row {
+      display: grid;
+      grid-template-columns: 165px 1fr 120px;
+      gap: 14px;
+      align-items: center;
+      margin: 15px 0;
+    }
+
+    .ratio-label, .ratio-value {
+      font-size: clamp(17px, 1.35vw, 22px);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .ratio-value { text-align: right; }
+
+    .bar-track {
+      height: 18px;
+      background: var(--grid);
+    }
+
+    .bar { height: 100%; background: var(--manual); }
+    .bar.comparison { background: var(--comparison); }
+
+    .protocol-caveat {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: clamp(15px, 1.2vw, 19px);
+      line-height: 1.4;
+    }
+
+    .decision {
+      margin-top: 30px;
+      padding-top: 24px;
+      border-top: 2px solid var(--ink);
+      font-size: clamp(21px, 1.65vw, 27px);
+      line-height: 1.35;
+    }
+
+    .workspace-link {
+      margin-top: 16px;
+      font-size: clamp(17px, 1.25vw, 20px);
+    }
+
+    .workspace-link a {
+      color: var(--manual);
+      font-weight: 650;
+      text-decoration-thickness: 1.5px;
+      text-underline-offset: 4px;
+    }
+
+    .footer {
+      position: absolute;
+      left: clamp(58px, 6.5vw, 112px);
+      right: clamp(58px, 6.5vw, 112px);
+      bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      color: #78838d;
+      font-size: 13px;
+      letter-spacing: .02em;
+    }
+
+    @media (max-width: 1000px) {
+      .two-col { gap: 34px; }
+      .plot-row { grid-template-columns: 185px 1fr 170px; }
+      .legend { margin-left: 200px; }
+    }
+
+    @media print {
+      html, body { width: auto; height: auto; overflow: visible; background: white; }
+      .slide {
+        position: relative;
+        display: block !important;
+        width: 13.333in;
+        height: 7.5in;
+        page-break-after: always;
+      }
+      @page { size: 13.333in 7.5in; margin: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-label="Zero-shot reasoning mode by temperature slides">
+    <section class="slide active" aria-label="Main hypotheses">
+      <div class="kicker">Qwen3-4B LM sampling experiments</div>
+      <h1>Zero-shot reasoning mode × temperature</h1>
+      <p class="question">Does native thinking or higher sampling temperature improve multi-agent discussion and group decisions?</p>
+      <div class="rule"></div>
+      <p class="hypothesis"><strong>H1 · Reasoning mode:</strong> native thinking will elicit more substantive negotiation and improve group decisions.</p>
+      <p class="hypothesis"><strong>H2 · Sampling:</strong> higher temperature will increase exploration and reduce premature consensus.</p>
+      <p class="workspace-link"><a href="vscode://file/Users/michalwilinski/Work/unscripted-llms/zero-shot-thinking-temperature/artifacts/zero-shot-thinking/zs-pilot-dgx2-paired-4k-20260819c/inspect-rollouts.code-workspace">Open complete rollout workspace in VS Code ↗</a></p>
+      <div class="footer"><span></span><span>1</span></div>
+    </section>
+
+    <section class="slide" aria-label="Experimental design">
+      <div class="kicker">Design</div>
+      <h1>2×2 LM sampling experiments</h1>
+      <div class="two-col">
+        <div>
+          <table class="method-table" aria-label="Experiment matrix">
+            <thead>
+              <tr><th></th><th>T = 1.0</th><th>T = 1.3</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Manual <code>&lt;THINK&gt;</code></td><td>100</td><td>100</td></tr>
+              <tr><td>Native thinking</td><td>100</td><td>100</td></tr>
+            </tbody>
+          </table>
+          <div class="note">Each condition used the same 100 environment seeds; environment inputs matched exactly across conditions.</div>
+        </div>
+        <div>
+          <ul>
+            <li><strong>Preference strata:</strong> five exhaustive groups defined by which professors initially share the same top candidate (n = 10, 17, 19, 17, 37)</li>
+            <li><strong>Per-call generation limit:</strong> 4,096 tokens</li>
+            <li><strong>Shared communication budget:</strong> 500 tokens; only public <code>GROUP</code> messages count</li>
+            <li><strong>Completion:</strong> 400/400 episodes; no invalid actions</li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer"><span></span><span>2</span></div>
+    </section>
+
+    <section class="slide" aria-label="Reasoning protocol comparison">
+      <div class="kicker">Protocol</div>
+      <h1>Only the reasoning interface changes</h1>
+      <div class="two-col">
+        <div>
+          <h2>Manual <code>&lt;THINK&gt;</code></h2>
+          <ul>
+            <li>Qwen-native thinking is disabled.</li>
+            <li>The prompt requires a literal <code>&lt;THINK&gt;...&lt;/THINK&gt;</code> block.</li>
+            <li>That generated block remains in the agent’s private conversation history.</li>
+          </ul>
+        </div>
+        <div>
+          <h2>Native thinking</h2>
+          <ul>
+            <li>Qwen-native thinking is enabled through the chat template.</li>
+            <li>The prompt does not request a second literal <code>&lt;THINK&gt;</code> block.</li>
+            <li>Native reasoning is stripped before the environment receives the visible action.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="protocol-caveat"><strong>Held fixed:</strong> visible action grammar, 4,096-token generation limit, environment, seeds, and 500-token public communication budget. Private reasoning is not charged to that shared budget.</p>
+      <p class="protocol-caveat">This is an end-to-end protocol comparison—not a tokenizer-only isolation.</p>
+      <div class="footer"><span></span><span>3</span></div>
+    </section>
+
+    <section class="slide" aria-label="Overall results">
+      <div class="kicker">All environments · n = 100 per condition</div>
+      <h1>Native reaches consensus with less discussion</h1>
+      <table class="results-table" aria-label="Overall results across all 100 seeds per condition">
+        <thead>
+          <tr><th>Condition</th><th>Instant</th><th>Negotiation</th><th>Consensus</th><th>Welfare eff.<br>mean ± SD</th><th>Social opt.</th><th>LM calls<br>mean ± SD</th><th>Comm. tokens<br>mean ± SD</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>Manual, T = 1.0</td><td>42.0%</td><td>56.0%</td><td>91.0%</td><td>85.1 ± 28.4%</td><td>49.0%</td><td>7.02 ± 8.22</td><td>115 ± 138</td></tr>
+            <tr><td>Manual, T = 1.3</td><td>30.0%</td><td>70.0%</td><td>93.0%</td><td>87.2 ± 25.6%</td><td>51.0%</td><td>7.30 ± 6.66</td><td>129 ± 142</td></tr>
+            <tr><td>Native, T = 1.0</td><td>79.0%</td><td>21.0%</td><td>100.0%</td><td>93.4 ± 10.3%</td><td>55.0%</td><td>2.76 ± 1.79</td><td>34 ± 26</td></tr>
+            <tr><td>Native, T = 1.3</td><td>85.0%</td><td>15.0%</td><td>100.0%</td><td>93.4 ± 10.6%</td><td>55.0%</td><td>2.49 ± 0.95</td><td>32 ± 18</td></tr>
+        </tbody>
+      </table>
+      <p class="result">Across all seeds, higher T modestly improves the manual aggregates. Native thinking reaches consensus quickly with higher welfare efficiency, but rarely negotiates.</p>
+      <p class="quality-note">Continuous metrics: mean ± sample SD across n = 100. Welfare eff. = chosen ÷ optimal total utility; social opt. = exact-best rate; no consensus = 0.</p>
+      <p class="quality-note">No invalid actions. Manual cells had no truncation or missing actions; native cells had 1.8–2.0% truncation and 1.4–1.6% missing visible actions.</p>
+      <div class="footer"><span></span><span>4</span></div>
+    </section>
+
+    <section class="slide" aria-label="Results stratified by preference overlap">
+      <div class="kicker">Preference-overlap strata · same 100 environments</div>
+      <h1>Native uses fewer LM calls in every stratum</h1>
+      <div class="strat-legend" aria-label="Condition legend">
+        <span class="series-m10">Manual, T = 1.0</span>
+        <span class="series-m13">Manual, T = 1.3</span>
+        <span class="series-n10">Native, T = 1.0</span>
+        <span class="series-n13">Native, T = 1.3</span>
+      </div>
+      <div class="strat-panels">
+        <div class="strat-panel" role="img" aria-label="Social optimality by preference-overlap stratum and condition">
+          <h2>Socially optimal decision rate</h2>
+          <div class="strat-axis"><span>0%</span><span>50%</span><span>100%</span></div>
+          <div class="strat-group">
+            <div class="strat-label">All share · n = 10</div>
+            <div class="strat-row series-m10" aria-label="Manual temperature 1.0, 80.0 percent"><div class="strat-track"><div class="strat-bar" style="width:80%"></div></div><div class="strat-value">80.0%</div></div>
+            <div class="strat-row series-m13" aria-label="Manual temperature 1.3, 90.0 percent"><div class="strat-track"><div class="strat-bar" style="width:90%"></div></div><div class="strat-value">90.0%</div></div>
+            <div class="strat-row series-n10" aria-label="Native temperature 1.0, 80.0 percent"><div class="strat-track"><div class="strat-bar" style="width:80%"></div></div><div class="strat-value">80.0%</div></div>
+            <div class="strat-row series-n13" aria-label="Native temperature 1.3, 80.0 percent"><div class="strat-track"><div class="strat-bar" style="width:80%"></div></div><div class="strat-value">80.0%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P1 + P2 share; P3 unique · n = 17</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:47.1%"></div></div><div class="strat-value">47.1%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:58.8%"></div></div><div class="strat-value">58.8%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:58.8%"></div></div><div class="strat-value">58.8%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:76.5%"></div></div><div class="strat-value">76.5%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P1 + P3 share; P2 unique · n = 19</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:42.1%"></div></div><div class="strat-value">42.1%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:36.8%"></div></div><div class="strat-value">36.8%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:52.6%"></div></div><div class="strat-value">52.6%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:52.6%"></div></div><div class="strat-value">52.6%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P2 + P3 share; P1 unique · n = 17</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:41.2%"></div></div><div class="strat-value">41.2%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:52.9%"></div></div><div class="strat-value">52.9%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:58.8%"></div></div><div class="strat-value">58.8%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:47.1%"></div></div><div class="strat-value">47.1%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">All top choices unique · n = 37</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:48.6%"></div></div><div class="strat-value">48.6%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:43.2%"></div></div><div class="strat-value">43.2%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:45.9%"></div></div><div class="strat-value">45.9%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:43.2%"></div></div><div class="strat-value">43.2%</div></div>
+          </div>
+        </div>
+        <div class="strat-panel" role="img" aria-label="Instant-decision rate by preference-overlap stratum and condition">
+          <h2>Instant-decision rate</h2>
+          <div class="strat-axis"><span>0%</span><span>50%</span><span>100%</span></div>
+          <div class="strat-group">
+            <div class="strat-label">All share · n = 10</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:60%"></div></div><div class="strat-value">60.0%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:50%"></div></div><div class="strat-value">50.0%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:100%"></div></div><div class="strat-value">100.0%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:100%"></div></div><div class="strat-value">100.0%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P1 + P2 share; P3 unique · n = 17</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:47.1%"></div></div><div class="strat-value">47.1%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:47.1%"></div></div><div class="strat-value">47.1%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:94.1%"></div></div><div class="strat-value">94.1%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:100%"></div></div><div class="strat-value">100.0%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P1 + P3 share; P2 unique · n = 19</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:21.1%"></div></div><div class="strat-value">21.1%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:10.5%"></div></div><div class="strat-value">10.5%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:73.7%"></div></div><div class="strat-value">73.7%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:73.7%"></div></div><div class="strat-value">73.7%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P2 + P3 share; P1 unique · n = 17</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:35.3%"></div></div><div class="strat-value">35.3%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:35.3%"></div></div><div class="strat-value">35.3%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:64.7%"></div></div><div class="strat-value">64.7%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:70.6%"></div></div><div class="strat-value">70.6%</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">All top choices unique · n = 37</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:48.6%"></div></div><div class="strat-value">48.6%</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:24.3%"></div></div><div class="strat-value">24.3%</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:75.7%"></div></div><div class="strat-value">75.7%</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:86.5%"></div></div><div class="strat-value">86.5%</div></div>
+          </div>
+        </div>
+        <div class="strat-panel" role="img" aria-label="Average language-model calls by preference-overlap stratum and condition">
+          <h2>Average LM calls</h2>
+          <div class="strat-axis"><span>0</span><span>5</span><span>10</span></div>
+          <div class="strat-group">
+            <div class="strat-label">All share · n = 10</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:40%"></div></div><div class="strat-value">4.00</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:51%"></div></div><div class="strat-value">5.10</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:20%"></div></div><div class="strat-value">2.00</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:21%"></div></div><div class="strat-value">2.10</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P1 + P2 share; P3 unique · n = 17</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:47.6%"></div></div><div class="strat-value">4.76</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:70%"></div></div><div class="strat-value">7.00</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:21.8%"></div></div><div class="strat-value">2.18</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:21.2%"></div></div><div class="strat-value">2.12</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P1 + P3 share; P2 unique · n = 19</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:90%"></div></div><div class="strat-value">9.00</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:82.6%"></div></div><div class="strat-value">8.26</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:26.3%"></div></div><div class="strat-value">2.63</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:28.9%"></div></div><div class="strat-value">2.89</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">P2 + P3 share; P1 unique · n = 17</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:97.6%"></div></div><div class="strat-value">9.76</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:57.6%"></div></div><div class="strat-value">5.76</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:29.4%"></div></div><div class="strat-value">2.94</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:26.5%"></div></div><div class="strat-value">2.65</div></div>
+          </div>
+          <div class="strat-group">
+            <div class="strat-label">All top choices unique · n = 37</div>
+            <div class="strat-row series-m10"><div class="strat-track"><div class="strat-bar" style="width:65.9%"></div></div><div class="strat-value">6.59</div></div>
+            <div class="strat-row series-m13"><div class="strat-track"><div class="strat-bar" style="width:82.4%"></div></div><div class="strat-value">8.24</div></div>
+            <div class="strat-row series-n10"><div class="strat-track"><div class="strat-bar" style="width:32.2%"></div></div><div class="strat-value">3.22</div></div>
+            <div class="strat-row series-n13"><div class="strat-track"><div class="strat-bar" style="width:24.9%"></div></div><div class="strat-value">2.49</div></div>
+          </div>
+        </div>
+      </div>
+      <p class="strat-takeaway"><strong>Across strata:</strong> native is consistently more instant and uses fewer LM calls. Quality gains disappear when all three top choices differ; temperature is non-monotonic <span style="color:var(--muted)">(n = 10–37)</span>.</p>
+      <div class="footer"><span></span><span>5</span></div>
+    </section>
+
+    <section class="slide" aria-label="All-unique top-choice stratum results">
+      <div class="kicker">All top choices unique · n = 37 per condition</div>
+      <h1>All-unique: more talk, no quality gain</h1>
+      <table class="results-table" aria-label="Results in the 37-environment all-unique top-choice stratum">
+        <thead>
+          <tr><th>Condition</th><th>Instant</th><th>Negotiation</th><th>Consensus</th><th>Welfare eff.<br>mean ± SD</th><th>Social opt.</th><th>LM calls<br>mean ± SD</th><th>Comm. tokens<br>mean ± SD</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Manual, T = 1.0</td><td>48.6%</td><td>48.6%</td><td>91.9%</td><td>86.4 ± 27.5%</td><td>48.6%</td><td>6.59 ± 8.97</td><td>100 ± 121</td></tr>
+          <tr><td>Manual, T = 1.3</td><td>24.3%</td><td>75.7%</td><td>91.9%</td><td>86.7 ± 27.3%</td><td>43.2%</td><td>8.24 ± 7.54</td><td>154 ± 159</td></tr>
+            <tr><td>Native, T = 1.0</td><td>75.7%</td><td>24.3%</td><td>100.0%</td><td>93.7 ± 8.3%</td><td>45.9%</td><td>3.22 ± 2.70</td><td>40 ± 36</td></tr>
+            <tr><td>Native, T = 1.3</td><td>86.5%</td><td>13.5%</td><td>100.0%</td><td>92.7 ± 9.1%</td><td>43.2%</td><td>2.49 ± 0.61</td><td>29 ± 14</td></tr>
+        </tbody>
+      </table>
+      <p class="result"><strong>Higher T manual:</strong> +27.1 pp negotiation and +53% communication, but flat welfare efficiency and −5.4 pp social optimality. Native thinking preserves high welfare efficiency but largely bypasses discussion.</p>
+      <p class="quality-note">Continuous metrics are episode means ± sample SD across n = 37; “Comm. tokens” means shared communication tokens used per episode. Percentage columns are rates.</p>
+      <div class="footer"><span></span><span>6</span></div>
+    </section>
+
+    <section class="slide" aria-label="Mechanism behind short native episodes">
+      <div class="kicker">Mechanism · all 100 environments</div>
+      <h1>Native ends early by following the first vote</h1>
+      <div class="mechanism-flow" role="img" aria-label="Native agents vote immediately, the second agent follows, and two matching votes terminate the episode">
+        <div class="flow-step"><strong>89–93%</strong><span>vote on the first LM call</span></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><strong>63–66%</strong><span>second voter copies the first despite preferring another candidate</span></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step"><strong>57–64%</strong><span>consensus after exactly two LM calls</span></div>
+      </div>
+      <div class="two-col insight-cols">
+        <div>
+          <h2>First-mover anchoring</h2>
+          <p>With three professors and a 50% threshold, two matching votes end the episode. Professor 3 never acts in most native runs.</p>
+          <p>This is fast coordination—not evidence of deeper preference aggregation.</p>
+        </div>
+        <div>
+          <h2>Length failures are not the cause</h2>
+          <ul>
+            <li>Native responses are <strong>~12–13× longer</strong> per call than manual responses.</li>
+            <li>Only <strong>1.8–2.0%</strong> of native calls hit the 4,096-token cap.</li>
+            <li>Truncation creates extra calls; it does not explain early termination.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="insight-close"><strong>Insight:</strong> native thinking is socially short but computationally long—and its consensus is first-mover-sensitive.</p>
+      <div class="footer"><span></span><span>7</span></div>
+    </section>
+
+    <section class="slide" aria-label="Next reward-shaping experiment">
+      <div class="kicker">Next experiment</div>
+      <h1>Next: reward useful discussion</h1>
+      <p class="question">I will investigate whether reward shaping can incentivize substantive discussion and improve group outcomes.</p>
+      <div class="rule"></div>
+      <div class="two-col">
+        <div>
+          <h2>Candidate intervention</h2>
+          <ul>
+            <li>Reward decision-relevant public communication and evidence integration.</li>
+            <li>Avoid rewarding message length or consensus alone.</li>
+          </ul>
+        </div>
+        <div>
+          <h2>Primary evaluation</h2>
+          <ul>
+            <li><strong>Social optimality rate</strong></li>
+            <li><strong>Welfare efficiency</strong></li>
+            <li>Report overall and across the five preference-overlap strata.</li>
+          </ul>
+        </div>
+      </div>
+      <p class="insight-close"><strong>Key question:</strong> does incentivized discussion improve decisions—or only produce more communication?</p>
+      <div class="footer"><span></span><span>8</span></div>
+    </section>
+
+  </main>
+
+  <script>
+    const slides = [...document.querySelectorAll('.slide')];
+    let index = Math.max(0, Math.min(slides.length - 1, Number(location.hash.slice(1)) - 1 || 0));
+
+    function show(next) {
+      index = Math.max(0, Math.min(slides.length - 1, next));
+      slides.forEach((slide, i) => slide.classList.toggle('active', i === index));
+      history.replaceState(null, '', `#${index + 1}`);
+    }
+
+    addEventListener('keydown', (event) => {
+      if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(event.key)) {
+        event.preventDefault(); show(index + 1);
+      }
+      if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(event.key)) {
+        event.preventDefault(); show(index - 1);
+      }
+      if (event.key === 'Home') show(0);
+      if (event.key === 'End') show(slides.length - 1);
+    });
+
+    addEventListener('click', (event) => show(index + (event.clientX > innerWidth / 2 ? 1 : -1)));
+    document.querySelectorAll('a').forEach((link) => link.addEventListener('click', (event) => event.stopPropagation()));
+    show(index);
+  </script>
+</body>
+</html>
