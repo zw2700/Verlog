@@ -698,8 +698,7 @@ def main() -> None:
     args = parse_args()
     if not args.out_jsonl:
         raise SystemExit("--out-jsonl or VERL_AGENT_EPISODE_LOG_PATH is required")
-    Path(args.out_jsonl).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out_jsonl).write_text("")
+    episode_logging.worker_shard_path(args.out_jsonl, 0).parent.mkdir(parents=True, exist_ok=True)
     if args.game_log:
         Path(args.game_log).parent.mkdir(parents=True, exist_ok=True)
 

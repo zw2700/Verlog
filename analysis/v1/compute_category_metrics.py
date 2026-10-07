@@ -16,15 +16,44 @@ DEFAULT_VALID_STUDENTS = set(range(5))
 STUDENT_RE = re.compile(r"\b[Ss]tudents?\s*(\d+)\b")
 
 
+def natural_sort_key(path: Path) -> list[Any]:
+    return [
+        int(part) if part.isdigit() else part
+        for part in re.split(r"(\d+)", str(path))
+    ]
+
+
+def episode_log_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        files = sorted(path.glob("*.worker*.jsonl"), key=natural_sort_key)
+        if files:
+            return files
+        files = sorted(path.glob("**/*.worker*.jsonl"), key=natural_sort_key)
+        if files:
+            return files
+        files = sorted(path.glob("*.jsonl"), key=natural_sort_key)
+        if files:
+            return files
+        files = sorted(path.glob("**/*.jsonl"), key=natural_sort_key)
+        if files:
+            return files
+        raise FileNotFoundError(f"No JSONL shards found under directory: {path}")
+    raise FileNotFoundError(f"Episode log path does not exist: {path}")
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     rows = []
-    with path.open() as f:
-        for line_no, line in enumerate(f, start=1):
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            row["_source_line"] = line_no
-            rows.append(row)
+    for shard_path in episode_log_files(path):
+        with shard_path.open() as f:
+            for line_no, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                row["_source_path"] = str(shard_path)
+                row["_source_line"] = line_no
+                rows.append(row)
     return rows
 
 
@@ -291,6 +320,7 @@ def build_episode_rows(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for ep in episodes:
         category, reason, features = categorize_episode(ep)
         row = {
+            "source_path": ep.get("_source_path"),
             "source_line": ep.get("_source_line"),
             "episode_uid": ep.get("episode_uid"),
             "global_step": ep.get("global_step"),
@@ -393,12 +423,67 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summary
 
 
+def overall_metrics(rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    consensus_rows = [row for row in rows if row["consensus"]]
+    social_rows = [
+        row for row in rows
+        if isinstance(row.get("socially_optimal"), bool)
+    ]
+    so_rows = [row for row in social_rows if row["socially_optimal"]]
+    consensus_social_rows = [
+        row for row in consensus_rows
+        if isinstance(row.get("socially_optimal"), bool)
+    ]
+    consensus_so_rows = [row for row in consensus_social_rows if row["socially_optimal"]]
+
+    return {
+        "consensus_rate": len(consensus_rows) / len(rows) if rows else None,
+        "socially_optimal_rate": len(so_rows) / len(social_rows) if social_rows else None,
+        "socially_optimal_given_consensus_rate": (
+            len(consensus_so_rows) / len(consensus_social_rows)
+            if consensus_social_rows
+            else None
+        ),
+    }
+
+
 def fmt(value: Any, digits: int = 3) -> str:
     if value is None:
         return "NA"
     if isinstance(value, float):
         return f"{value:.{digits}f}"
     return str(value)
+
+
+def markdown_table(headers: list[str], rows: list[list[Any]], right_align: set[int] | None = None) -> list[str]:
+    right_align = right_align or set()
+    string_rows = [[str(cell) for cell in row] for row in rows]
+    widths = [
+        max(len(headers[idx]), *(len(row[idx]) for row in string_rows))
+        if string_rows
+        else len(headers[idx])
+        for idx in range(len(headers))
+    ]
+
+    def format_row(row: list[str]) -> str:
+        cells = []
+        for idx, cell in enumerate(row):
+            padded = cell.rjust(widths[idx]) if idx in right_align else cell.ljust(widths[idx])
+            cells.append(f" {padded} ")
+        return "|" + "|".join(cells) + "|"
+
+    separator_cells = []
+    for idx, width in enumerate(widths):
+        if idx in right_align:
+            separator_cells.append("-" * max(width, 3) + ":")
+        else:
+            separator_cells.append("-" * max(width, 3))
+
+    return [
+        format_row(headers),
+        "|" + "|".join(f" {cell} " for cell in separator_cells) + "|",
+        *(format_row(row) for row in string_rows),
+    ]
 
 
 def write_outputs(out_dir: Path, episode_rows: list[dict[str, Any]], summary: list[dict[str, Any]], args: argparse.Namespace) -> None:
@@ -426,38 +511,44 @@ def write_outputs(out_dir: Path, episode_rows: list[dict[str, Any]], summary: li
         writer.writeheader()
         writer.writerows(summary)
 
+    overall = overall_metrics(episode_rows)
+    source_files = episode_log_files(args.episode_log)
     lines = [
         "# Category Metrics Summary",
         "",
         f"- episode_log: `{args.episode_log}`",
+        f"- episode_log files read: `{len(source_files)}`",
         f"- global_step range: `{args.step_start}` to `{args.step_end}`",
         f"- episodes analyzed: `{len(episode_rows)}`",
+        f"- overall consensus rate: `{fmt(overall['consensus_rate'])}`",
+        f"- overall SO rate: `{fmt(overall['socially_optimal_rate'])}`",
+        f"- overall SO given consensus rate: `{fmt(overall['socially_optimal_given_consensus_rate'])}`",
         "",
-        "| Category | Episodes | % | Consensus | SO | SO|cons | Avg eff | Avg rank | Avg tokens | Avg turns |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for row in summary:
-        lines.append(
-            "| {category} | {episodes} | {percent} | {consensus} | {so} | {so_cons} | {eff} | {rank} | {tokens} | {turns} |".format(
-                category=row["category"],
-                episodes=row["episodes"],
-                percent=fmt(row["percent"]),
-                consensus=fmt(row["consensus_rate"]),
-                so=fmt(row["socially_optimal_rate"]),
-                so_cons=fmt(row["socially_optimal_given_consensus_rate"]),
-                eff=fmt(row["avg_social_welfare_efficiency"]),
-                rank=fmt(row["avg_chosen_student_rank_global_consensus_only"]),
-                tokens=fmt(row["avg_tokens_used"], 1),
-                turns=fmt(row["avg_total_turns"], 1),
-            )
-        )
+    headers = ["Category", "Episodes", "%", "Consensus", "SO", "SO given cons", "Avg eff", "Avg rank", "Avg tokens", "Avg turns"]
+    rows = [
+        [
+            row["category"],
+            row["episodes"],
+            fmt(row["percent"]),
+            fmt(row["consensus_rate"]),
+            fmt(row["socially_optimal_rate"]),
+            fmt(row["socially_optimal_given_consensus_rate"]),
+            fmt(row["avg_social_welfare_efficiency"]),
+            fmt(row["avg_chosen_student_rank_global_consensus_only"]),
+            fmt(row["avg_tokens_used"], 1),
+            fmt(row["avg_total_turns"], 1),
+        ]
+        for row in summary
+    ]
+    lines.extend(markdown_table(headers, rows, right_align=set(range(1, len(headers)))))
     lines.append("")
     (out_dir / "category_metrics_summary.md").write_text("\n".join(lines))
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--episode-log", required=True, type=Path, help="Path to episode_log_*.jsonl")
+    parser.add_argument("--episode-log", required=True, type=Path, help="Path to episode_log_*.jsonl or a sharded episode-log directory")
     parser.add_argument("--step-start", type=int, default=None, help="Inclusive global_step lower bound")
     parser.add_argument("--step-end", type=int, default=None, help="Inclusive global_step upper bound")
     parser.add_argument("--out-dir", required=True, type=Path, help="Directory for output artifacts")

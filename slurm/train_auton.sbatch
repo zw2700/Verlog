@@ -10,6 +10,8 @@
 #SBATCH --mem=200G
 #SBATCH --time=47:59:00
 #SBATCH --gres=gpu:a6000:4
+#SBATCH --gres-flags=enforce-binding
+#SBATCH --requeue
 #
 # Thin wrapper: all training hyperparameters live in configs/train_auton.yaml.
 # This file only does Slurm resource requests + env setup, then one launch.
@@ -23,6 +25,9 @@
 # For an ablation, set `tag` so the wandb run name is self-describing:
 #   sbatch slurm/train_auton.sbatch tag=students7 envs.env_config.students_per_batch=7
 #   -> wandb run name "unscripted_auton_students7_<jobid>"
+#
+# Enable sparse critic-model-only checkpoints:
+#   sbatch slurm/train_auton.sbatch tag=critic-only +checkpointing=critic_only
 #
 set -euo pipefail
 
