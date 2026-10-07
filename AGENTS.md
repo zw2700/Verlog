@@ -9,7 +9,10 @@ composable config files, **not** in the sbatch. Do not paste walls of `key=value
 into new sbatch scripts — override the Hydra config instead.
 
 Key files:
-- `configs/train_auton.yaml` — the canonical training config (composes over `ppo_trainer`).
+- `configs/train_auton.yaml` — the canonical training config (composes over `ppo_trainer`),
+  including the default dynamic-batching and critic-warmup safeguards.
+- `configs/checkpointing/critic_only.yaml` — optional sparse critic-model checkpoints,
+  composed with `+checkpointing=critic_only`.
 - `configs/env/auton_admissions.yaml` — env params (`num_envs`, `env_config.*` such as
   `professor_ids`, `students_per_batch`, `token_budget`, `vote_threshold`, …).
 - `slurm/train_auton.sbatch` — the only supported Rhea training entrypoint. Never hardcode experiment params here.
@@ -44,6 +47,9 @@ Conventions for agents:
   `envs.env_config.students_per_batch=7`. Mismatched tag/value makes runs untraceable.
 - Adding a key that isn't in the schema needs Hydra's `+` prefix
   (`+envs.env_config.new_flag=true`); changing an existing key does not.
+- Reusable policies live under named config groups and are composed explicitly, for
+  example `+checkpointing=critic_only`. Continue to use direct overrides for one-off
+  ablations.
 - List values (e.g. `professor_ids`) are passed quoted:
   `envs.env_config.professor_ids='["prof_1","prof_2"]'`.
 
@@ -61,7 +67,8 @@ done
 ### Before running / reporting
 
 - Runs need `slurm/auton.env` (install from `slurm/auton.env.example` and verify
-  `ENV_PATH`, `DATA_DIR`, and `MODEL_PATH`). It is git-ignored and must remain private.
+  `ENV_PATH`, `DATA_DIR`, `MODEL_PATH`, and optional `CHECKPOINT_ROOT`). It is
+  git-ignored and must remain private.
   Standard `wandb login` state is sufficient; `WANDB_API_KEY` is optional.
 - When reporting an ablation, cite the **wandb run name** (`unscripted_auton_<tag>_<jobid>`) and the
   exact override(s) used, so the run is reproducible from the report alone.

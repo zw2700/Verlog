@@ -1,0 +1,74 @@
+[
+  {
+    "avg_social_welfare_efficiency": 0.9840857340857341,
+    "avg_tokens_used": 54.54054054054054,
+    "avg_total_turns": 1.9189189189189189,
+    "category_counts": "instant_decision=36, negotiation=1",
+    "consensus_rate": 1.0,
+    "episodes": 37,
+    "percent": 0.050824175824175824,
+    "scenario": "all_three_share_top",
+    "socially_optimal_given_consensus_rate": 0.9459459459459459,
+    "socially_optimal_rate": 0.9459459459459459
+  },
+  {
+    "avg_social_welfare_efficiency": 0.9703299916493093,
+    "avg_tokens_used": 63.45238095238095,
+    "avg_total_turns": 2.3015873015873014,
+    "category_counts": "instant_decision=111, negotiation=15",
+    "consensus_rate": 0.9920634920634921,
+    "episodes": 126,
+    "percent": 0.17307692307692307,
+    "scenario": "only_prof_1_prof_2_share_top",
+    "socially_optimal_given_consensus_rate": 0.744,
+    "socially_optimal_rate": 0.7380952380952381
+  },
+  {
+    "avg_social_welfare_efficiency": 0.9283054226462698,
+    "avg_tokens_used": 103.64102564102564,
+    "avg_total_turns": 3.019230769230769,
+    "category_counts": "instant_decision=81, negotiation=74, stalled_coordination_failure=1",
+    "consensus_rate": 0.967948717948718,
+    "episodes": 156,
+    "percent": 0.21428571428571427,
+    "scenario": "only_prof_1_prof_3_share_top",
+    "socially_optimal_given_consensus_rate": 0.6688741721854304,
+    "socially_optimal_rate": 0.6474358974358975
+  },
+  {
+    "avg_social_welfare_efficiency": 0.9445389031257894,
+    "avg_tokens_used": 87.39669421487604,
+    "avg_total_turns": 2.669421487603306,
+    "category_counts": "instant_decision=54, negotiation=67",
+    "consensus_rate": 1.0,
+    "episodes": 121,
+    "percent": 0.1662087912087912,
+    "scenario": "only_prof_2_prof_3_share_top",
+    "socially_optimal_given_consensus_rate": 0.5785123966942148,
+    "socially_optimal_rate": 0.5785123966942148
+  },
+  {
+    "avg_social_welfare_efficiency": 0.8486457481989691,
+    "avg_tokens_used": 143.36200716845877,
+    "avg_total_turns": 3.1577060931899643,
+    "category_counts": "instant_decision=147, negotiation=132",
+    "consensus_rate": 0.9032258064516129,
+    "episodes": 279,
+    "percent": 0.38324175824175827,
+    "scenario": "no_pair_shares_top",
+    "socially_optimal_given_consensus_rate": 0.43253968253968256,
+    "socially_optimal_rate": 0.3906810035842294
+  },
+  {
+    "avg_social_welfare_efficiency": 0.9156523005554695,
+    "avg_tokens_used": 72.55555555555556,
+    "avg_total_turns": 2.2222222222222223,
+    "category_counts": "instant_decision=6, negotiation=3",
+    "consensus_rate": 1.0,
+    "episodes": 9,
+    "percent": 0.012362637362637362,
+    "scenario": "multi_pair_without_all_three_common_top",
+    "socially_optimal_given_consensus_rate": 0.3333333333333333,
+    "socially_optimal_rate": 0.3333333333333333
+  }
+]

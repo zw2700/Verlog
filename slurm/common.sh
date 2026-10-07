@@ -32,7 +32,8 @@ export HF_HOME="${HF_HOME:-$PROJECT_DIR/.cache/huggingface}"
 TMPDIR_BASE="${TMPDIR:-$PROJECT_DIR/tmp}"
 export TMPDIR="${TMPDIR_BASE%/}/${JOB_ID}"
 export RAY_TMPDIR="$TMPDIR/ray"
-mkdir -p "$HF_HOME" "$TMPDIR" "$PROJECT_DIR/logs"
+export CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-$PROJECT_DIR/checkpoints}"
+mkdir -p "$HF_HOME" "$TMPDIR" "$CHECKPOINT_ROOT" "$PROJECT_DIR/logs"
 
 # Accept either an explicit key or the standard credentials written by
 # `wandb login`. Never copy a literal key into a committed launcher.
@@ -79,6 +80,50 @@ export VLLM_USE_V1=1
 export VERL_AUTO_PADDING=TRUE
 export PYTHONUNBUFFERED=1
 
+# Reject allocations whose GPUs span CPU/NUMA sockets. Such allocations made
+# FSDP collectives 5-10x slower in prior runs. Requeue while excluding each
+# fragmented node; ALLOW_SPLIT_GPUS=1 disables the guard for a deliberate run.
+echo "=== GPU topology ==="
+scontrol show job -d "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'GRES=[^ ]+' || true
+echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
+nvidia-smi topo -m || true
+
+VISIBLE_GPU_SELECTOR=()
+GPU_TOPOLOGY_IDS="${SLURM_JOB_GPUS:-$CUDA_VISIBLE_DEVICES}"
+if [ -n "$GPU_TOPOLOGY_IDS" ] && [ "$GPU_TOPOLOGY_IDS" != "NoDevFiles" ]; then
+    VISIBLE_GPU_SELECTOR=(-i "$GPU_TOPOLOGY_IDS")
+fi
+
+GPU_NUMA_NODES=$( { nvidia-smi "${VISIBLE_GPU_SELECTOR[@]}" --query-gpu=pci.bus_id --format=csv,noheader | while read -r bus; do
+    dev="0000:$(echo "$bus" | cut -d: -f2- | tr '[:upper:]' '[:lower:]')"
+    cat "/sys/bus/pci/devices/$dev/numa_node" 2>/dev/null || echo "?"
+done | sort -u; } || true )
+echo "Distinct GPU NUMA nodes: $(echo "$GPU_NUMA_NODES" | tr '\n' ' ')"
+
+if [ "$(echo "$GPU_NUMA_NODES" | grep -cE '^[0-9]+$')" -gt 1 ] && [ "${ALLOW_SPLIT_GPUS:-0}" != "1" ]; then
+    echo "FATAL: allocated GPUs span multiple NUMA domains; training would be ~5-10x slower."
+    RESTARTS="${SLURM_RESTART_COUNT:-0}"
+    if [ "$RESTARTS" -lt "${MAX_SPLIT_GPU_REQUEUES:-5}" ]; then
+        PREV_EXC=$(scontrol show job "$SLURM_JOB_ID" | grep -oE 'ExcNodeList=[^ ]+' | cut -d= -f2 || true)
+        NEW_EXC="$SLURMD_NODENAME"
+        if [ -n "$PREV_EXC" ] && [ "$PREV_EXC" != "(null)" ]; then
+            NEW_EXC="$PREV_EXC,$SLURMD_NODENAME"
+        fi
+        echo "Requeue attempt $((RESTARTS + 1)): excluding node(s) $NEW_EXC"
+        if scontrol requeue "$SLURM_JOB_ID"; then
+            scontrol update JobId="$SLURM_JOB_ID" ExcNodeList="$NEW_EXC" \
+                || echo "WARN: could not set ExcNodeList; retry may land on the same node"
+            sleep 30
+            exit 0
+        fi
+        echo "WARN: requeue failed"
+    else
+        echo "Giving up after $RESTARTS requeue attempts."
+    fi
+    echo "Resubmit with an exclusion, or set ALLOW_SPLIT_GPUS=1 to accept this allocation."
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Per-job agent I/O and game logs.
 # ---------------------------------------------------------------------------
@@ -86,6 +131,7 @@ export VERL_AGENT_IO_LOG_PATH="$PROJECT_DIR/logs/agent_model_${JOB_ID}.log"
 export VERL_AGENT_IO_LOG_FULL_PROMPT=0
 export VERL_AGENT_EPISODE_LOG_PATH="$PROJECT_DIR/logs/episode_log_${JOB_ID}.jsonl"
 export VERL_GAME_LOG_PATH="$PROJECT_DIR/logs/game_log_${JOB_ID}.log"
+export VERL_PROFILE_AGENT_LOOP="${VERL_PROFILE_AGENT_LOOP:-1}"
 : > "$VERL_AGENT_IO_LOG_PATH"
 
 echo "=== Job ${JOB_ID} on ${SLURMD_NODENAME:-local} — $(date) ==="

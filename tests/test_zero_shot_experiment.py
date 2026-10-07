@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 from analysis import compute_zero_shot_matrix
 from scripts import launch_zero_shot_matrix, rollout_frontier
@@ -313,3 +316,23 @@ def test_run_metadata_contains_resolved_experimental_variables(tmp_path: Path) -
     assert metadata["episode_seeds"] == [10, 11, 12]
     assert metadata["environment_config"]["token_budget"] == 500
     assert metadata["episode_workers"] == 8
+
+
+@pytest.mark.parametrize("reasoning_mode", ["manual-tags", "native-thinking"])
+def test_fake_rollout_keeps_manifest_log_path_and_replaces_previous_run(tmp_path, monkeypatch, reasoning_mode):
+    output = tmp_path / "episodes.jsonl"
+    output.write_text('{"seed": -1}\n')
+    monkeypatch.delenv("VERL_GAME_LOG_PATH", raising=False)
+    monkeypatch.delenv("ZERO_SHOT_METADATA_PATH", raising=False)
+    monkeypatch.setattr(sys, "argv", [
+        "rollout_frontier", "--provider", "fake", "--num-episodes", "2",
+        "--episode-workers", "2", "--seed-base", "10",
+        "--reasoning-mode", reasoning_mode, "--out-jsonl", str(output),
+    ])
+
+    rollout_frontier.main()
+
+    rows = compute_zero_shot_matrix.read_jsonl(output)
+    assert len(rows) == 2
+    assert sorted(row["seed"] for row in rows) == [10, 11]
+    assert all(row["experiment"]["reasoning_mode"] == reasoning_mode for row in rows)
