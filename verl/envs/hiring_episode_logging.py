@@ -37,6 +37,31 @@ def json_safe(obj: Any) -> Any:
     return obj
 
 
+def worker_shard_path(path: str | Path, env_idx: int) -> Path:
+    """Return a worker shard inside the run-specific episode log directory.
+
+    For example, ``logs/foo.jsonl`` becomes
+    ``logs/foo/foo.worker03.jsonl``.
+
+    One writer per file needs no flock. The shared-file variant serialized all
+    agent-loop workers on an exclusive NFS lock at every episode end; blocked
+    NFS lock waiters can starve for minutes, stalling rollout generation.
+    Merge shards with: cat foo/foo.worker*.jsonl
+    """
+    p = Path(path)
+    filename = f"{p.stem}.worker{env_idx:02d}{p.suffix or '.jsonl'}"
+    return p.parent / p.stem / filename
+
+
+def append_jsonl(path: str | Path, row: dict[str, Any]) -> None:
+    """Append one JSONL row without locking (single-writer files only)."""
+    log_file = Path(path)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(json_safe(row), sort_keys=True) + "\n"
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write(payload)
+
+
 def append_jsonl_locked(path: str | Path, row: dict[str, Any]) -> None:
     """Append one JSONL row under a file lock to avoid multi-worker interleaving."""
     log_file = Path(path)
@@ -210,7 +235,7 @@ def append_episode_jsonl_log(
         reward=reward,
         info=info,
     )
-    append_jsonl_locked(path, row)
+    append_jsonl(worker_shard_path(path, env_idx), row)
 
 
 def format_episode_diagnosis(

@@ -200,9 +200,9 @@ actor_rollout_ref:
       _target_: verl.workers.config.SamplingConfig
       top_k: -1
       top_p: 1.0
-      temperature: 0
+      temperature: 1.0
       'n': 1
-      do_sample: false
+      do_sample: true
     multi_turn:
       _target_: verl.workers.config.MultiTurnConfig
       enable: false
@@ -221,7 +221,7 @@ actor_rollout_ref:
     agent:
       _target_: verl.workers.config.AgentLoopConfig
       num_workers: 8
-      default_agent_loop: single_turn_agent
+      default_agent_loop: tool_agent
       agent_loop_config_path: null
       custom_async_server:
         _target_: verl.workers.config.CustomAsyncServerConfig
@@ -447,8 +447,10 @@ custom_reward_function:
   name: compute_score
 algorithm:
   _target_: verl.trainer.config.AlgoConfig
-  gamma: 1.0
-  lam: 1.0
+  token_gamma: 1.0
+  step_gamma: 0.99
+  token_lam: 1.0
+  step_lam: 0.95
   adv_estimator: gae
   norm_adv_by_std_in_grpo: true
   use_kl_in_reward: false
@@ -478,12 +480,16 @@ trainer:
   logger:
   - console
   - wandb
-  log_val_generations: 0
+  log_val_generations: 1
   rollout_data_dir: null
   validation_data_dir: null
   nnodes: 1
   n_gpus_per_node: 8
   save_freq: -1
+  save_freq_offset: 0
+  save_steps: null
+  save_actor_checkpoint: true
+  save_critic_checkpoint: true
   esi_redundant_time: 0
   resume_mode: auto
   resume_from_path: null
@@ -491,6 +497,8 @@ trainer:
   val_only: false
   test_freq: -1
   critic_warmup: 0
+  critic_warmup_batch_repeat_times: 1
+  critic_warmup_batch_divide_ratio: 1
   default_hdfs_dir: null
   del_local_ckpt_after_load: false
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
@@ -530,3 +538,41 @@ ray_kwargs:
   ray_init:
     num_cpus: null
   timeline_json_file: null
+envs:
+  num_envs: 32
+  env_name: babyai
+  task: BabyAI-MixedTrainLocal-v0/goto
+  format_penalty: 0.1
+  binary_reward: true
+  captioner:
+    type: cot
+    max_text_history: 1
+    max_cot_history: 1
+    max_image_history: 0
+  babyai_kwargs:
+    num_dists: 0
+  babaisai_kwargs:
+    add_ruleset: true
+  crafter_kwargs:
+    area:
+    - 64
+    - 64
+    view:
+    - 9
+    - 9
+    size:
+    - 256
+    - 256
+    reward: true
+    seed: null
+    max_episode_steps: 2000
+  minihack_kwargs:
+    character: '@'
+    max_episode_steps: 100
+    penalty_step: -0.01
+    penalty_time: 0.0
+    penalty_mode: constant
+    savedir: null
+    save_ttyrec_every: 0
+    autopickup: false
+    skip_more: true
