@@ -87,6 +87,11 @@ if [ "$NUM_GPUS_PER_NODE" -ne "$ALLOCATED_GPU_COUNT" ]; then
 fi
 unset ROCR_VISIBLE_DEVICES || true
 export VLLM_USE_V1=1
+# VERL imports can touch CUDA before the inference engine creates its workers.
+# Forking that parent is unsafe; use a fresh interpreter for zero-shot workers.
+if [ "$VERLOG_JOB_MODE" = zero_shot ]; then
+    export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
+fi
 export VERL_AUTO_PADDING=TRUE
 export PYTHONUNBUFFERED=1
 

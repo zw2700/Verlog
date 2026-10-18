@@ -107,6 +107,10 @@ zero-shot mode no dataset or W&B login is required, and no PPO workers start.
 Real model execution also refuses to start without a Slurm GPU allocation;
 use `dry_run=true` for planning on the login node.
 `VERLOG_JOB_MODE` defaults to `train`, preserving the original training entrypoint.
+Zero-shot mode defaults `VLLM_WORKER_MULTIPROC_METHOD=spawn`: VERL/runtime imports
+can touch CUDA before engine startup, making vLLM's default fork unsafe. Smoke
+job 87813 exposed this before model loading. Cold imports from the shared runtime
+also took several minutes on `gpu2`; include startup in timing estimates.
 
 ## Evidence and inspection
 

@@ -327,8 +327,14 @@ def test_shared_setup_resolves_remapped_gpus_and_preserves_occupancy_guard(tmp_p
         "GPU_TEST_STATE": gpu_state,
     }
     env.pop("DATA_DIR", None)
+    env.pop("VLLM_WORKER_MULTIPROC_METHOD", None)
     result = subprocess.run(
-        ["bash", "-c", f'source "{ROOT}/slurm/common.sh"; echo "CUDA_STILL=$CUDA_VISIBLE_DEVICES"'],
+        [
+            "bash",
+            "-c",
+            f'source "{ROOT}/slurm/common.sh"; echo "CUDA_STILL=$CUDA_VISIBLE_DEVICES"; '
+            'echo "VLLM_METHOD=$VLLM_WORKER_MULTIPROC_METHOD"',
+        ],
         env=env,
         capture_output=True,
         text=True,
@@ -339,6 +345,7 @@ def test_shared_setup_resolves_remapped_gpus_and_preserves_occupancy_guard(tmp_p
     if gpu_state == "free":
         assert result.returncode == 0, result.stderr
         assert "CUDA_STILL=0" in result.stdout
+        assert "VLLM_METHOD=spawn" in result.stdout
     else:
         assert result.returncode == 42
         expected = "already contain compute processes" if gpu_state == "busy" else "cannot query compute processes"

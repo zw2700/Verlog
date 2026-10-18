@@ -259,6 +259,9 @@ The same launcher also supports inference-only protocol pilots via
 `scripts/zero_shot_pilot.py`. Explicitly request one GPU/8 CPUs/48G as the starting
 Qwen3-4B pilot shape rather than inheriting the four-GPU training allocation.
 This mode does not require DATA_DIR or W&B login and starts no PPO/Ray workers.
+It defaults `VLLM_WORKER_MULTIPROC_METHOD=spawn` because VERL/runtime imports can
+touch CUDA before vLLM starts its engine; fork failed in smoke job 87813. Cold
+shared-runtime imports on `gpu2` took several minutes, before any model loading.
 See `docs/zero_shot_pilot.md`. Inspect capacity read-only when the user has not
 yet chosen a run; preparing the code does not authorize submitting a job.
 The GPU occupancy guard resolves allocated GPU UUIDs before querying processes.
