@@ -10,11 +10,13 @@ from typing import Any
 
 import numpy as np
 
-
 VOTE_PATTERN = re.compile(r"<VOTE>\s*(\d+)\s*</VOTE>", re.IGNORECASE)
 GROUP_PATTERN = re.compile(r"<GROUP>(.*?)</GROUP>", re.DOTALL | re.IGNORECASE)
 WAIT_PATTERN = re.compile(r"<WAIT\s*/?>|<WAIT>\s*</WAIT>", re.IGNORECASE)
 WAIT_FOR_PATTERN = re.compile(r"<WAIT_FOR>\s*(prof_\d+)\s*</WAIT_FOR>", re.IGNORECASE)
+READINESS_PATTERN = re.compile(r"<(READY_TO_VOTE|CONTINUE_DISCUSSION)\s*/?>", re.IGNORECASE)
+PASS_PATTERN = re.compile(r"<PASS\s*/?>", re.IGNORECASE)
+PHASE_PATTERN = re.compile(r"^PHASE: (discussion|readiness|ballot|done)\b", re.MULTILINE)
 UTILITY_ROW_PATTERN = re.compile(
     r"Student\s+(?P<student>\d+)\s+\|\s+(?P<utility>-?\d+(?:\.\d+)?)\s+\|"
 )
@@ -90,6 +92,8 @@ def parse_action_summary(action_text: str) -> dict[str, Any]:
         "votes": VOTE_PATTERN.findall(action_text),
         "wait_count": len(WAIT_PATTERN.findall(action_text)),
         "wait_for": WAIT_FOR_PATTERN.findall(action_text),
+        "readiness": [choice.lower() for choice in READINESS_PATTERN.findall(action_text)],
+        "pass_count": len(PASS_PATTERN.findall(action_text)),
     }
 
 
@@ -134,6 +138,7 @@ def build_episode_turn_entry(
 ) -> dict[str, Any]:
     turn_context = extract_turn_context(messages)
     action_text = extract_action_text(output_text)
+    phase_match = PHASE_PATTERN.search(turn_context)
     return {
         "ts": f"{timestamp}Z",
         "epoch": epoch,
@@ -142,6 +147,7 @@ def build_episode_turn_entry(
         "turn_id": turn_id,
         "episode_turn_id": episode_turn_id,
         "agent": agent_id,
+        "phase": phase_match[1] if phase_match else None,
         "prompt_tokens": prompt_tokens,
         "response_tokens": response_tokens,
         "turn_context": turn_context,
@@ -178,6 +184,7 @@ def build_episode_log_row(
     consensus = bool(episode_state.get("consensus_reached", False))
     return {
         "schema_version": 1,
+        "protocol": episode_state.get("protocol", "async_ticker"),
         "epoch": epoch,
         "global_step": global_steps,
         "env": env_idx,

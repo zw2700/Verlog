@@ -92,6 +92,24 @@ changing prompts, turn order, or the environment submodule. See
 `docs/reward_comparison_experiment.md`. Completion metrics are cleared on every
 nonterminal step so W&B counts each finished game only once.
 
+### Deliberation and voting protocol
+
+`env@envs=deliberation_voting` selects an opt-in parent-repo implementation in
+`verl/envs/hiring_deliberation.py`; the pinned hiring submodule is unchanged.
+The default `auton_admissions` preset keeps `protocol=async_ticker` as the original
+baseline. The new protocol supports all existing reward-comparison modes.
+See `docs/deliberation_voting_protocol.md` for the rules and launch examples.
+
+Preserve the actor visibility boundary: public GROUP messages plus only the
+observing professor's private thoughts/actions/utilities. Readiness is announced
+only after all submit, and sealed ballots never enter another actor's prompt.
+Privileged Gym info/episode logs are research metadata, never actor observations.
+Test through `make_async_ticker_env`, reset/step, and
+`get_observation_for_agent` (also used for bootstrap), including malformed outputs
+and counterfactual hidden-state changes. Run `tests/envs/test_hiring_deliberation.py`.
+The preset disables the old step cap; finite discussion-round/token limits open
+the reserved final ballot instead of failing the episode before voting.
+
 ### Asymmetric critic observations
 
 `critic_observation.mode=actor_visible` gives the value critic exactly the actor

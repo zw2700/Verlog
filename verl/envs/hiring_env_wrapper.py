@@ -11,7 +11,6 @@ from typing import Any
 
 import gym
 
-
 CRITIC_PROBE_MODES = {"off", "visible", "hidden"}
 CRITIC_PROBE_PROMPT = (
     "CRITIC SANITY CHECK: Your terminal reward for this episode will be {target:+.1f}. "
@@ -239,6 +238,8 @@ def make_async_ticker_env(config: dict[str, Any], tokenizer=None) -> AsyncTicker
             - reward_mode: individual/group/combined/binary_individual/binary_social_optimum
             - reward_optimum_atol: optional absolute tolerance for optimum ties
             - reward_alpha: float (for "combined" mode)
+            - protocol: "async_ticker" (baseline) or "deliberation_voting"
+            - deliberation: max_rounds, readiness_quorum, ballot_visibility
             - system_prompt: str or Dict[str, str]
             - prompt_length: int (optional, for token-based truncation)
             - max_prompt_words: int (optional, for word-based truncation)
@@ -255,8 +256,15 @@ def make_async_ticker_env(config: dict[str, Any], tokenizer=None) -> AsyncTicker
     env_config = dict(config)
     critic_probe_mode = str(env_config.pop("critic_probe_mode", "off"))
     critic_probe_seed = env_config.pop("critic_probe_seed", None)
+    protocol = env_config.pop("protocol", "async_ticker")
+    if protocol not in {"async_ticker", "deliberation_voting"}:
+        raise ValueError(f"Unknown hiring protocol: {protocol!r}")
     env_class = AsyncTickerAdmissionsEnv
-    if "reward_optimum_atol" in env_config or env_config.get("reward_mode") in {
+    if protocol == "deliberation_voting":
+        from verl.envs.hiring_deliberation import DeliberationVotingAdmissionsEnv
+
+        env_class = DeliberationVotingAdmissionsEnv
+    elif "reward_optimum_atol" in env_config or env_config.get("reward_mode") in {
         "binary_individual", "binary_social_optimum"
     }:
         from verl.envs.hiring_reward_modes import RewardComparisonAdmissionsEnv

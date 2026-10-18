@@ -11,6 +11,7 @@ env_name: async_ticker_admissions
 
 # Everything under env_config is passed through to the env constructor.
 env_config:
+  protocol: async_ticker  # Original baseline; opt in via env@envs=deliberation_voting.
   professor_ids: ["prof_1", "prof_2", "prof_3"]
   students_per_batch: 5
   token_budget: 500

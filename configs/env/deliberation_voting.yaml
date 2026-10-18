@@ -1,0 +1,15 @@
+# Select with env@envs=deliberation_voting. Works with +experiment=reward_comparison.
+defaults:
+  - auton_admissions
+  - _self_
+
+env_config:
+  protocol: deliberation_voting
+  # The legacy per-action cap must not prevent readiness checks/final ballots.
+  # The new protocol instead has a finite discussion-round cap (63 calls max
+  # for 3 professors and 10 rounds, including readiness checks and ballots).
+  max_steps: null
+  deliberation:
+    max_rounds: 10
+    readiness_quorum: null  # All but one: 2 of 3. Checked after all submissions.
+    ballot_visibility: sealed  # public is a separate visibility ablation.
