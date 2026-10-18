@@ -64,6 +64,11 @@ and initializing its pinned hiring submodule are deployment steps, not performed
 by the launcher. Do not modify a checkout serving another job. Do not copy local
 credentials into it. The pilot records source state and refuses a dirty real run.
 
+The historical `/zfsauton/scratch/mwilinsk/unscripted/Verlog` directory currently
+contains a stale `.git` pointer to a Mac worktree (checked 2026-10-17). Stage from
+a valid Git repository or a fresh clone; do not reuse or repair that directory
+in place. Source deployment has not been performed as part of preparation.
+
 ## Submit only after selecting resources
 
 Use the existing canonical launcher. This is an **example**, not a submitted job:
@@ -91,6 +96,8 @@ Slurm-exposed GPU count unless explicitly overridden.
 For H200, choose the currently eligible partition/QOS and replace the GPU type
 with `h200:1`; do not assume the general partition includes H200. Query Slurm
 before deciding. Do not pin a node merely because it looked free earlier.
+On 2026-10-17, `project` allows `qos_radio_freq` (available to Michal's account)
+and `qos_project_preempt`. The debug partition's current maximum is one hour.
 
 The launcher preserves `CUDA_VISIBLE_DEVICES` and checks compute processes only
 on the allocated physical GPU IDs. It never stops global Ray/process state. In

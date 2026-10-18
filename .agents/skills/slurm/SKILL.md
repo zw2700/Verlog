@@ -81,6 +81,14 @@ If those paths fail, discover the remote repo before running repo-relative comma
 ssh rhea 'for d in "/zfsauton/scratch/$USER/unscripted/Verlog" "$HOME/codebase-skills" "$HOME/unscripted-llms/codebase-skills" "$HOME/Work/unscripted-llms/codebase-skills" "/zfsauton2/home/$USER/unscripted-llms/codebase-skills" "/zfsauton2/home/$USER/unscripted/Verlog"; do [ -d "$d/.git" ] && echo "$d"; done'
 ```
 
+Read-only inspection on 2026-10-17 found that Michal's historical
+`/zfsauton/scratch/mwilinsk/unscripted/Verlog` has a copied `.git` file pointing
+to a Mac worktree and is not a valid Git checkout on Rhea. Do not repair it in
+place or use it as a worktree parent. A valid Git repository exists at
+`/zfsauton/scratch/mwilinsk/unscripted/Verlog-rhea-sbatch-smoke`; verify it before
+using it, or stage a fresh clone after deployment is authorized. New runs need
+their own immutable, commit-pinned checkout under `unscripted/experiments/`.
+
 Use `/zfsauton/scratch` for the project checkout, datasets, caches, checkpoints, logs, and temporary files rather than filling home directories.
 
 Common log names in this repo include:
@@ -128,13 +136,18 @@ Rhea is an internal server. Use it for Slurm commands, job submission, queue ins
 
 Use partition and QOS together. Matching QOS to partition gives the expected priority.
 
-| Partition | Use | Default Time | Max Time | Max GPUs | Max CPUs | QOS | GPU Models |
-|---|---|---:|---:|---:|---:|---|---|
-| `debug` | short tests and debugging | 0.5h | 12h | 2 | 32 | `qos_debug` | `rtx_2080_ti`, `v100`, `a6000` |
-| `general` | general use, standard jobs; default GPU partition | 4h | 2d | 8 | 128 | `qos_general` | `a5000`, `a6000` |
-| `legacy` | older GPU nodes | 4h | 2d | 12 | 120 | `qos_legacy` | `rtx_2080_ti`, `v100` |
-| `preempt` | long, low-priority GPU jobs | 4h | 7d | 8 | 128 | `qos_preempt` | `a6000` |
-| `cpu` | CPU-only tasks | 6h | 2d | 0 | 352 | `qos_cpu` | none |
+Partition limits verified on 2026-10-17; query current QOS/association limits
+before choosing GPU and CPU counts. Michal's association includes
+`qos_radio_freq`, making the `project` partition eligible.
+
+| Partition | Use | Default Time | Max Time | QOS | GPU Models |
+|---|---|---:|---:|---|---|
+| `debug` | short tests and debugging | 15min | 1h | `qos_debug` | `rtx_2080_ti`, `v100`, `a6000` |
+| `general` | general use, standard jobs; default GPU partition | 4h | 2d | `qos_general` | `a5000`, `a6000` |
+| `project` | H200 node `gpu2`; requires eligible QOS | 4h | 2d | `qos_radio_freq`, `qos_project_preempt` | `h200` |
+| `legacy` | older GPU nodes | 4h | 2d | `qos_legacy` | `rtx_2080_ti`, `v100` |
+| `preempt` | long, low-priority GPU jobs | 4h | 7d | `qos_preempt` | `a6000` |
+| `cpu` | CPU-only tasks | 6h | 2d | `qos_cpu` | none |
 
 Start status checks with queue state:
 
