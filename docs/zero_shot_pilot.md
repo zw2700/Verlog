@@ -42,7 +42,7 @@ under the surrounding project directory. Earlier attempts 87812 and 87813
 exposed, respectively, the GPU-renumbering guard and CUDA/fork startup failures;
 both launcher fixes are committed. No larger pilot was submitted.
 
-## What runs
+## Format/cache validations: 2026-10-18
 
 The first format/cache validation, job **88467** on 2026-10-18, used commit
 `b5d5c417d1d0e8184804fefb7c8956240490a7ff`, five scenarios per condition, and the
@@ -64,9 +64,36 @@ cap. The control also had eleven well-formed actions in the wrong phase. The
 next interface revision explicitly describes readiness/PASS as standalone
 tokens with no payload or closing tag, removes the GROUP message placeholder,
 and repeats phase-specific legal actions. The strict parser and game rules stay
-unchanged. A second small validation is required before the larger pilot.
+unchanged. The second small validation below checks this revision.
 Artifacts for 88467 are under
 `materials/experiment-results/2026-10-18/deliberation-voting/format-cache-88467/`.
+
+The repeat, job **88472**, used commit
+`edbe0a66e4eef3089a613bd9512d8dc0b282632f` and the same five scenarios per
+condition. All 15 games completed with exit code 0 in **1m53s**. The 45
+`LLM.chat` batches (223 requests) took **70.28s**. The runtime/model cache was
+warm after the earlier run, so the shorter overall job time is not evidence
+of an isolated prompt-layout speedup.
+
+| Condition | Calls | Malformed | Invalid | Cached input fraction |
+|---|---:|---:|---:|---:|
+| baseline | 19 | 0 | 0 | 64.7% |
+| deliberation | 81 | 2 | 8 | 67.5% |
+| deliberation_no_communication | 123 | 1 | 6 | 80.5% |
+
+Every readiness submission and all **30 sealed ballots** across the two new
+protocol conditions were valid. Remaining discussion-phase errors were three
+responses clipped at 512 tokens, three well-formed actions in the wrong phase,
+and ten messages exceeding the remaining discussion budget. Malformed/invalid
+counts overlap, and some clipped reasoning has no separately invalid action.
+Those model errors remain counted; the parser, budget, generation cap, and rules
+were not relaxed. This supports moving to a larger diagnostic pilot, not a
+mechanism-performance conclusion from five scenarios. No 100-game pilot was run.
+
+Artifacts and the checked validation report are under
+`materials/experiment-results/2026-10-18/deliberation-voting/readiness-format-88472/`.
+
+## What runs
 
 `configs/zero_shot_pilot.yaml` defines 20 scenarios per condition, batch size 16,
 own continuous utility, temperature 0.7, top-p 1.0, and 512 output tokens per call.
