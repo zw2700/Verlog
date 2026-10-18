@@ -64,12 +64,15 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
         if n < 2 or len(set(self.professor_ids)) != n:
             raise ValueError("deliberation_voting requires at least two distinct professor IDs")
         options = config.get("deliberation", {})
-        unknown_options = set(options) - {"max_rounds", "readiness_quorum"}
+        unknown_options = set(options) - {"max_rounds", "readiness_quorum", "communication_enabled"}
         if unknown_options:
             raise ValueError(f"Unknown deliberation options: {sorted(unknown_options)}")
         self.max_discussion_rounds = options.get("max_rounds", 10)
         quorum = options.get("readiness_quorum")
         self.readiness_quorum = n - 1 if quorum is None else quorum
+        self.communication_enabled = options.get("communication_enabled", True)
+        if not isinstance(self.communication_enabled, bool):
+            raise ValueError("deliberation.communication_enabled must be a boolean")
         if not isinstance(self.max_discussion_rounds, int) or self.max_discussion_rounds < 1:
             raise ValueError("deliberation.max_rounds must be a positive integer")
         if not isinstance(self.readiness_quorum, int) or not 1 <= self.readiness_quorum <= n:
@@ -94,6 +97,13 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
         self._phase_turns = dict.fromkeys(("discussion", "readiness", "ballot"), 0)
 
     def build_system_prompt(self, professor_id, preference_vector=None):
+        communication_notice = (
+            "PUBLIC COMMUNICATION IS DISABLED in this condition: GROUP messages are retained only "
+            "in your private history and are not delivered to other professors. They still consume "
+            "the same discussion budget; you may PASS. Readiness counts and budget status remain public.\n"
+            if not self.communication_enabled
+            else ""
+        )
         payoff = {
             "individual": "Your selection reward is your own utility for the selected student.",
             "group": (
@@ -120,6 +130,7 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             "1. DISCUSSION: Each professor gets one opportunity per round to send <GROUP>message</GROUP> "
             "or <PASS>. The initial speaking order is shuffled; the first speaker rotates each round. "
             "Statements and promises in messages do not cast ballots or bind anyone.\n"
+            f"{communication_notice}"
             "2. READINESS: After a complete round, each professor independently submits <READY_TO_VOTE> "
             "or <CONTINUE_DISCUSSION>. Submissions stay private; the count is announced only after all respond. "
             f"At least {self.readiness_quorum} ready signals close discussion. Signals reset each check.\n"
@@ -300,14 +311,27 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             cost = self._count_tokens(parsed["message"])
             if cost <= self.token_budget - self.episode_state["tokens_used"]:
                 self.episode_state["tokens_used"] += cost
-                self.history_manager.add_public(
-                    actor,
-                    f"<GROUP>{parsed['message']}</GROUP>",
-                    turn,
-                    self._count_tokens(parsed["action"]),
-                    "communication",
-                    fields,
-                )
+                if self.communication_enabled:
+                    self.history_manager.add_public(
+                        actor,
+                        f"<GROUP>{parsed['message']}</GROUP>",
+                        turn,
+                        self._count_tokens(parsed["action"]),
+                        "communication",
+                        fields,
+                    )
+                else:
+                    # Keep the action and its budget cost without delivering
+                    # text to other professors or counting it as public speech.
+                    self.history_manager.add_private_action(
+                        actor,
+                        f"<GROUP>{parsed['message']}</GROUP>",
+                        turn,
+                        self._count_tokens(parsed["action"]),
+                        message_type="wait",
+                        withheld_message=True,
+                        **fields,
+                    )
             else:
                 parsed["invalid"] = fields["invalid"] = True
                 self.history_manager.add_private_action(
@@ -439,6 +463,10 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             **{f"{phase}_turns": count for phase, count in self._phase_turns.items()},
             "valid_ballots": len(self.episode_state["votes"]),
             "abstentions": len(self.professor_ids) - len(self.episode_state["votes"]),
+            "communication_enabled": int(self.communication_enabled),
+            "withheld_messages": sum(
+                bool(event.get("withheld_message")) for event in self.history_manager._all_messages
+            ),
             **{
                 f"closed_by_{reason}": int(self._closure_reason == reason)
                 for reason in ("readiness", "token_budget", "round_limit")

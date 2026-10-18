@@ -12,3 +12,4 @@ env_config:
   deliberation:
     max_rounds: 10
     readiness_quorum: null  # All but one: 2 of 3. Checked after all submissions.
+    communication_enabled: true

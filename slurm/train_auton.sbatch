@@ -15,6 +15,8 @@
 #
 # Thin wrapper: all training hyperparameters live in configs/train_auton.yaml.
 # This file only does Slurm resource requests + env setup, then one launch.
+# VERLOG_JOB_MODE=zero_shot selects configs/zero_shot_pilot.yaml instead, using
+# this same launcher. Explicitly override resources for a 1-GPU inference pilot.
 #
 # Submit as-is:
 #   sbatch slurm/train_auton.sbatch
@@ -37,10 +39,15 @@ source "$PROJECT_DIR/slurm/common.sh"
 
 # experiment_name is built in the config from `tag` + $SLURM_JOB_ID, so we do NOT
 # override it here — that keeps `tag=...` visible in the wandb run name.
-"$PYTHON_BIN" -m verl.trainer.main_ppo \
-    --config-path="$PROJECT_DIR/configs" \
-    --config-name=train_auton \
-    ray_kwargs.ray_init.num_cpus="$SLURM_CPUS_PER_TASK" \
-    "$@"
+if [ "$VERLOG_JOB_MODE" = zero_shot ]; then
+    # Same canonical entrypoint; no optimizer/critic/Ray workers are started.
+    "$PYTHON_BIN" -m scripts.zero_shot_pilot "$@"
+else
+    "$PYTHON_BIN" -m verl.trainer.main_ppo \
+        --config-path="$PROJECT_DIR/configs" \
+        --config-name=train_auton \
+        ray_kwargs.ray_init.num_cpus="$SLURM_CPUS_PER_TASK" \
+        "$@"
+fi
 
 echo "=== Done ${JOB_ID} — $(date) ==="

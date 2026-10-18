@@ -241,6 +241,16 @@ Configure private paths and optional secrets in the git-ignored `slurm/auton.env
 
 This is the only supported Rhea training entrypoint. Put experiment changes in Hydra overrides after the launcher path; do not create copied sbatch files or alternate submission paths.
 
+The same launcher also supports inference-only protocol pilots via
+`VERLOG_JOB_MODE=zero_shot`, using `configs/zero_shot_pilot.yaml` and
+`scripts/zero_shot_pilot.py`. Explicitly request one GPU/8 CPUs/48G as the starting
+Qwen3-4B pilot shape rather than inheriting the four-GPU training allocation.
+This mode does not require DATA_DIR or W&B login and starts no PPO/Ray workers.
+See `docs/zero_shot_pilot.md`. Inspect capacity read-only when the user has not
+yet chosen a run; preparing the code does not authorize submitting a job.
+The GPU occupancy guard queries only the allocated physical GPU selector so
+other jobs sharing the node are not mistaken for contamination of our device.
+
 Environment overrides read by the canonical config include:
 
 ```bash

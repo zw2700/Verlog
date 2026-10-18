@@ -19,7 +19,12 @@ if [ -f "$PROJECT_DIR/slurm/auton.env" ]; then
 fi
 
 ENV_PATH="${ENV_PATH:?set ENV_PATH to your conda env prefix (e.g. in slurm/auton.env)}"
-export DATA_DIR="${DATA_DIR:?set DATA_DIR to the dir holding train.parquet/test.parquet}"
+export VERLOG_JOB_MODE="${VERLOG_JOB_MODE:-train}"
+case "$VERLOG_JOB_MODE" in
+    train) export DATA_DIR="${DATA_DIR:?set DATA_DIR to the dir holding train.parquet/test.parquet}" ;;
+    zero_shot) ;;  # Pure inference: no seed dataset or W&B login required.
+    *) echo "ERROR: VERLOG_JOB_MODE must be train or zero_shot" >&2; exit 1 ;;
+esac
 
 cd "$PROJECT_DIR"
 
@@ -40,7 +45,7 @@ mkdir -p "$HF_HOME" "$TMPDIR" "$CHECKPOINT_ROOT" "$PROJECT_DIR/logs"
 
 # Accept either an explicit key or the standard credentials written by
 # `wandb login`. Never copy a literal key into a committed launcher.
-if [ -z "${WANDB_API_KEY:-}" ] && ! grep -qsE '^[[:space:]]*machine[[:space:]]+api\.wandb\.ai([[:space:]]|$)' "$HOME/.netrc"; then
+if [ "$VERLOG_JOB_MODE" = train ] && [ -z "${WANDB_API_KEY:-}" ] && ! grep -qsE '^[[:space:]]*machine[[:space:]]+api\.wandb\.ai([[:space:]]|$)' "$HOME/.netrc"; then
     echo "ERROR: run 'wandb login' or set WANDB_API_KEY in slurm/auton.env" >&2
     exit 1
 fi
@@ -149,7 +154,7 @@ nvidia-smi -L 2>/dev/null || echo "WARN: nvidia-smi unavailable"
 # Slurm occasionally returns a GPU before an old CUDA process has disappeared.
 # Refuse to start rather than turning that node contamination into a misleading
 # model OOM. With ConstrainDevices enabled, this query sees only this job's GPUs.
-GPU_COMPUTE_APPS="$(nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader,nounits 2>/dev/null || true)"
+GPU_COMPUTE_APPS="$(nvidia-smi "${VISIBLE_GPU_SELECTOR[@]}" --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader,nounits 2>/dev/null || true)"
 if [[ "$GPU_COMPUTE_APPS" =~ [^[:space:]] ]]; then
     echo "ERROR: allocated GPU(s) already contain compute processes; refusing to launch" >&2
     echo "gpu_uuid, pid, used_memory_mib" >&2

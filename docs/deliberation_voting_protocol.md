@@ -112,6 +112,13 @@ unchanged while ballots are collected. All submission orders therefore provide
 the same information and resolve the same fixed ballot profile identically.
 The old asynchronous public-vote protocol remains a separate baseline.
 
+`deliberation.communication_enabled=false` disables public GROUP delivery without
+changing the action interface, budget costs, or ballot. Messages remain only in
+the sender's private history and are counted as withheld messages, not public
+speech. The prompt explicitly describes the disabled channel. See
+`docs/zero_shot_pilot.md` for the matched three-condition zero-shot runner and
+the canonical Rhea launch configuration.
+
 ## Verification
 
 ```bash

@@ -1,5 +1,11 @@
 # Rhea training standard
 
+For the prepared zero-shot protocol pilot, use this same launcher with
+`VERLOG_JOB_MODE=zero_shot`; parameters live in `configs/zero_shot_pilot.yaml`.
+See [the pilot guide](../docs/zero_shot_pilot.md) for a one-GPU resource example,
+dry-run, output schema, and deployment requirements. No jobs are submitted by
+preparing or dry-running the code. The default mode remains training.
+
 All project training on Rhea must use `slurm/train_auton.sbatch`. Training
 behavior lives in `configs/train_auton.yaml`; the sbatch file owns only Slurm
 resources, private environment setup, and the single training invocation.

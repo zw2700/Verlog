@@ -232,6 +232,7 @@ def append_episode_jsonl_log(
     turns: list[dict[str, Any]],
     reward: Any,
     info: dict[str, Any] | None,
+    rollout_metadata: dict[str, Any] | None = None,
 ) -> None:
     row = build_episode_log_row(
         epoch=epoch,
@@ -242,6 +243,8 @@ def append_episode_jsonl_log(
         reward=reward,
         info=info,
     )
+    if rollout_metadata is not None:
+        row["rollout_metadata"] = rollout_metadata
     append_jsonl(worker_shard_path(path, env_idx), row)
 
 

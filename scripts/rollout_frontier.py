@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """Run hiring-env rollouts against frontier/API models.
 
-This runner bypasses PPO but uses the same AsyncTickerAdmissionsEnv and the
+This runner bypasses PPO but uses the same hiring environment factory and the
 same episode JSONL row builder as training rollouts.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Generator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from verl.envs import hiring_episode_logging as episode_logging
-from verl.envs.hiring_env.env import AsyncTickerAdmissionsEnv
-
+from verl.envs.hiring_env_wrapper import make_async_ticker_env
 
 DEFAULT_ENV_CONFIG = {
     "professor_ids": ["prof_1", "prof_2", "prof_3"],
@@ -114,7 +115,9 @@ def _json_env(name: str) -> dict[str, Any]:
     return parsed
 
 
-def _extract_text_logprob_vote_metadata(output_text: str, content_logprobs: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+def _extract_text_logprob_vote_metadata(
+    output_text: str, content_logprobs: list[dict[str, Any]] | None
+) -> dict[str, Any] | None:
     """Best-effort vote metadata from OpenAI-compatible token logprobs."""
     if not content_logprobs:
         return None
@@ -139,9 +142,7 @@ def _extract_text_logprob_vote_metadata(output_text: str, content_logprobs: list
     return {
         "vote_alternatives": alternatives or None,
         "vote_chosen_token": str(chosen_item.get("token", "")),
-        "vote_chosen_logprob": (
-            float(chosen_item["logprob"]) if chosen_item.get("logprob") is not None else None
-        ),
+        "vote_chosen_logprob": (float(chosen_item["logprob"]) if chosen_item.get("logprob") is not None else None),
     }
 
 
@@ -296,7 +297,14 @@ class FakeVoteClient(BaseClient):
         self.student = student
 
     def complete(self, messages: list[dict[str, str]]) -> Completion:
-        text = f"<THINK>I will cast a simple vote for smoke testing.</THINK>\n<VOTE>{self.student}</VOTE>"
+        context = messages[-1]["content"]
+        if "PHASE: discussion;" in context:
+            action = "<PASS>"
+        elif "PHASE: readiness;" in context:
+            action = "<READY_TO_VOTE>"
+        else:
+            action = f"<VOTE>{self.student}</VOTE>"
+        text = f"<THINK>Protocol smoke test.</THINK>\n{action}"
         prompt_tokens = sum(len(str(message.get("content", "")).split()) for message in messages)
         return Completion(
             text=text,
@@ -446,6 +454,13 @@ def load_env_config(args: argparse.Namespace) -> dict[str, Any]:
         config["terminate_on_all_voted_no_consensus"] = args.terminate_on_all_voted_no_consensus
     if args.reward_mode is not None:
         config["reward_mode"] = args.reward_mode
+    config["protocol"] = args.protocol
+    if args.protocol == "deliberation_voting":
+        config["max_steps"] = None
+        config["deliberation"] = {
+            "max_rounds": args.max_discussion_rounds,
+            "communication_enabled": args.communication_enabled,
+        }
     if args.reward_alpha is not None:
         config["reward_alpha"] = args.reward_alpha
     if args.show_ability_vectors is not None:
@@ -491,13 +506,14 @@ def write_game_log_prompt_header(path: str | Path | None, system_prompts: dict[s
         return
     log_file = Path(path)
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().isoformat(timespec="seconds")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     lines = [
         "",
         "=" * 70,
         f"=== GAME LOG RUN PROMPTS {timestamp}Z ===",
         "=" * 70,
-        "System prompts logged once for this rollout process. Per-turn entries below log only the dynamic turn context.",
+        "System prompts logged once for this rollout process. "
+        "Per-turn entries below log only the dynamic turn context.",
         "",
     ]
     for agent_id in sorted(system_prompts):
@@ -507,9 +523,8 @@ def write_game_log_prompt_header(path: str | Path | None, system_prompts: dict[s
     log_file.write_text("\n".join(lines), encoding="utf-8")
 
 
-def run_episode(
+def episode_rollout(
     *,
-    client: BaseClient,
     env_config: dict[str, Any],
     seed: int,
     env_idx: int,
@@ -521,17 +536,22 @@ def run_episode(
     provider_name: str,
     model_name: str,
     include_raw_response: bool,
-) -> dict[str, Any]:
-    env = AsyncTickerAdmissionsEnv({**env_config, "seed": seed})
+    tokenizer=None,
+    request_context: dict[str, Any] | None = None,
+) -> Generator[list[dict[str, str]], Completion, dict[str, Any]]:
+    env = make_async_ticker_env({**env_config, "seed": seed}, tokenizer=tokenizer)
     messages, info = env.reset()
     flat_info = flatten_info(info)
     agent_id = flat_info.get("active_agent")
+    scenario = {key: flat_info[key] for key in ("student_batch", "professor_interests")}
+    scenario_hash = hashlib.sha256(json.dumps(episode_logging.json_safe(scenario), sort_keys=True).encode()).hexdigest()
 
     turns: list[dict[str, Any]] = []
     game_blocks: list[str] = []
     reward: Any = {}
     done = False
     turn_id = 0
+    actor_phase_turns = {}
     start_wall = time.time()
 
     while not done:
@@ -539,9 +559,15 @@ def run_episode(
         if acting_agent is None:
             raise RuntimeError("Environment did not provide an active_agent")
 
-        completion = client.complete(messages)
+        phase = (flat_info.get("episode_state") or {}).get("phase", "async_ticker")
+        key = (acting_agent, phase)
+        actor_phase_turns[key] = actor_phase_turns.get(key, 0) + 1
+        if request_context is not None:
+            request_context.clear()
+            request_context.update(agent_id=acting_agent, phase=phase, actor_phase_turn=actor_phase_turns[key])
+        completion = yield messages
         output_text = completion.text or ""
-        now = datetime.utcnow().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
         prompt_tokens = completion.prompt_tokens
         prompt_token_source = "provider_usage"
         if prompt_tokens is None:
@@ -569,6 +595,8 @@ def run_episode(
         )
         turn_entry["prompt_token_source"] = prompt_token_source
         turn_entry["response_token_source"] = response_token_source
+        if request_context is not None:
+            turn_entry["sampling_seed"] = request_context.get("sampling_seed")
         if include_raw_response and completion.raw is not None:
             turn_entry["provider_raw_response"] = completion.raw
         turns.append(turn_entry)
@@ -606,6 +634,13 @@ def run_episode(
         turns=turns,
         reward=reward,
         info=flat_info,
+        rollout_metadata={
+            "scenario_seed": seed,
+            "scenario_sha256": scenario_hash,
+            "provider": provider_name,
+            "model": model_name,
+            "env_config": env_config,
+        },
     )
     write_game_log(
         game_log,
@@ -626,6 +661,7 @@ def run_episode(
     llm_output_tokens = sum(int(turn.get("response_tokens") or 0) for turn in turns)
     return {
         "seed": seed,
+        "scenario_sha256": scenario_hash,
         "env": env_idx,
         "episode_index": episode_index,
         "turns": len(turns),
@@ -635,8 +671,36 @@ def run_episode(
         "consensus": bool((flat_info.get("episode_state") or {}).get("consensus_reached", False)),
         "chosen_student_rank_global": metrics.get("outcome/chosen_student_rank_global"),
         "social_welfare_efficiency": metrics.get("social_welfare/efficiency"),
+        "public_messages": metrics.get("communication/total_messages", 0),
+        "speaking_professors": sum(
+            count > 0 for count in flat_info["episode_metrics"]["communication"]["messages_per_agent"].values()
+        ),
+        "format_errors": sum(
+            stats["format_errors"] for stats in flat_info["episode_metrics"]["action_validity"]["by_agent"].values()
+        ),
+        "invalid_actions": sum(
+            stats["invalid_errors"] for stats in flat_info["episode_metrics"]["action_validity"]["by_agent"].values()
+        ),
+        "participating_professors": sum(
+            stats["turns"] > 0 for stats in flat_info["episode_metrics"]["action_validity"]["by_agent"].values()
+        ),
+        "phase_turns": {
+            phase: metrics.get(f"deliberation/{phase}_turns", 0) for phase in ("discussion", "readiness", "ballot")
+        },
         "elapsed_sec": time.time() - start_wall,
     }
+
+
+def run_episode(*, client: BaseClient, **kwargs) -> dict[str, Any]:
+    """Drive one episode; the same coroutine supports the batched local pilot."""
+    rollout = episode_rollout(**kwargs)
+    messages = next(rollout)
+    while True:
+        completion = client.complete(messages)
+        try:
+            messages = rollout.send(completion)
+        except StopIteration as finished:
+            return finished.value
 
 
 def parse_args() -> argparse.Namespace:
@@ -673,10 +737,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminate-on-all-voted-no-consensus", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prompt-length", type=int, default=4096)
     parser.add_argument("--max-prompt-words", type=int, default=None)
-    parser.add_argument("--reward-mode", choices=["individual", "group", "combined"], default=None)
+    parser.add_argument(
+        "--reward-mode",
+        choices=["individual", "group", "combined", "binary_individual", "binary_social_optimum"],
+        default=None,
+    )
     parser.add_argument("--reward-alpha", type=float, default=None)
     parser.add_argument("--show-ability-vectors", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--randomize-turn-order", action="store_true")
+    parser.add_argument("--protocol", choices=["async_ticker", "deliberation_voting"], default="async_ticker")
+    parser.add_argument("--max-discussion-rounds", type=int, default=10)
+    parser.add_argument("--communication-enabled", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--utility-mode", choices=["linear", "squared", "exp"], default=None)
     parser.add_argument(
         "--professor-preference-mode",
@@ -690,7 +761,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--preference-correlation-threshold", type=float, default=None)
     parser.add_argument("--preference-rejection-max-attempts", type=int, default=None)
-    parser.add_argument("--env-config-json", default=None, help="JSON string or path to a JSON object of env config overrides.")
+    parser.add_argument(
+        "--env-config-json", default=None, help="JSON string or path to a JSON object of env config overrides."
+    )
     return parser.parse_args()
 
 
@@ -705,7 +778,7 @@ def main() -> None:
     env_config = load_env_config(args)
     client = make_client(args)
     if args.game_log:
-        prompt_env = AsyncTickerAdmissionsEnv({**env_config, "seed": args.seed_base})
+        prompt_env = make_async_ticker_env({**env_config, "seed": args.seed_base}).env
         prompt_env.reset()
         system_prompts = {
             agent_id: (
@@ -719,8 +792,7 @@ def main() -> None:
         }
         write_game_log_prompt_header(args.game_log, system_prompts)
     print(
-        f"Running {args.num_episodes} episodes provider={args.provider} model={args.model} "
-        f"out_jsonl={args.out_jsonl}"
+        f"Running {args.num_episodes} episodes provider={args.provider} model={args.model} out_jsonl={args.out_jsonl}"
     )
     print(f"Env config: {json.dumps(env_config, sort_keys=True)}")
 

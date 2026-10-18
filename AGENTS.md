@@ -113,6 +113,22 @@ and counterfactual hidden-state changes. Run `tests/envs/test_hiring_deliberatio
 The preset disables the old step cap; finite discussion-round/token limits open
 the reserved final ballot instead of failing the episode before voting.
 
+### Zero-shot protocol pilot
+
+`VERLOG_JOB_MODE=zero_shot` selects `scripts/zero_shot_pilot.py` through the same
+`slurm/train_auton.sbatch`; the default mode is still PPO training. Parameters
+live in `configs/zero_shot_pilot.yaml`. Zero-shot mode needs the model/runtime,
+not the inherited GSM8K files or W&B credentials. Request one GPU explicitly.
+Never submit a job when the user only requested preparation/capacity inspection.
+
+The runner batches independent episodes with request seeds, checks scenario
+hashes across conditions, and records commit/submodule/runtime/config metadata,
+per-game JSONL, traces, and summaries. Real runs require clean pinned sources;
+fake-backend integration tests are explicitly labeled and are not evidence.
+`deliberation.communication_enabled=false` withholds GROUP delivery to other
+professors while retaining actions, budget costs, and private thinking. It does
+not modify ballot timing. Test with `tests/envs/test_zero_shot_pilot.py`.
+
 ### Asymmetric critic observations
 
 `critic_observation.mode=actor_visible` gives the value critic exactly the actor
