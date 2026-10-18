@@ -98,11 +98,37 @@ scontrol show job -d "$SLURM_JOB_ID" 2>/dev/null | grep -oE 'GRES=[^ ]+' || true
 echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset}"
 nvidia-smi topo -m || true
 
-VISIBLE_GPU_SELECTOR=()
-GPU_TOPOLOGY_IDS="${SLURM_JOB_GPUS:-$CUDA_VISIBLE_DEVICES}"
-if [ -n "$GPU_TOPOLOGY_IDS" ] && [ "$GPU_TOPOLOGY_IDS" != "NoDevFiles" ]; then
-    VISIBLE_GPU_SELECTOR=(-i "$GPU_TOPOLOGY_IDS")
+# With device cgroups, NVML can renumber physical GPU 5 as GPU 0. Resolve UUIDs
+# from the job-visible view before querying topology/processes. When NVML still
+# exposes the whole node, select Slurm's physical IDs first.
+query_gpu_uuids() {
+    local uuids
+    uuids="$(nvidia-smi "$@" --query-gpu=uuid --format=csv,noheader)" || return 1
+    uuids="$(printf '%s\n' "$uuids" | tr -d '[:blank:]' | sed '/^$/d')"
+    if [ -z "$uuids" ] || printf '%s\n' "$uuids" | grep -qvE '^GPU-[[:xdigit:]-]+$'; then
+        return 1
+    fi
+    printf '%s\n' "$uuids"
+}
+
+if ! NVML_GPU_UUIDS="$(query_gpu_uuids)"; then
+    echo "ERROR: cannot enumerate job-visible GPU UUIDs" >&2
+    exit 42
 fi
+NVML_GPU_COUNT="$(printf '%s\n' "$NVML_GPU_UUIDS" | wc -l | tr -d '[:space:]')"
+if [ "$NVML_GPU_COUNT" -eq "$ALLOCATED_GPU_COUNT" ]; then
+    ALLOCATED_GPU_UUIDS="$NVML_GPU_UUIDS"
+elif ! ALLOCATED_GPU_UUIDS="$(query_gpu_uuids -i "${SLURM_JOB_GPUS:-$CUDA_VISIBLE_DEVICES}")"; then
+    echo "ERROR: cannot resolve Slurm's allocated GPUs in the NVML view" >&2
+    exit 42
+fi
+RESOLVED_GPU_COUNT="$(printf '%s\n' "$ALLOCATED_GPU_UUIDS" | wc -l | tr -d '[:space:]')"
+if [ "$RESOLVED_GPU_COUNT" -ne "$ALLOCATED_GPU_COUNT" ]; then
+    echo "ERROR: resolved $RESOLVED_GPU_COUNT GPUs, expected $ALLOCATED_GPU_COUNT" >&2
+    exit 42
+fi
+VISIBLE_GPU_SELECTOR=(-i "$(printf '%s\n' "$ALLOCATED_GPU_UUIDS" | paste -sd, -)")
+echo "Allocated GPU UUIDs: ${VISIBLE_GPU_SELECTOR[1]}"
 
 GPU_NUMA_NODES=$( { nvidia-smi "${VISIBLE_GPU_SELECTOR[@]}" --query-gpu=pci.bus_id --format=csv,noheader | while read -r bus; do
     dev="0000:$(echo "$bus" | cut -d: -f2- | tr '[:upper:]' '[:lower:]')"
@@ -154,7 +180,11 @@ nvidia-smi -L 2>/dev/null || echo "WARN: nvidia-smi unavailable"
 # Slurm occasionally returns a GPU before an old CUDA process has disappeared.
 # Refuse to start rather than turning that node contamination into a misleading
 # model OOM. With ConstrainDevices enabled, this query sees only this job's GPUs.
-GPU_COMPUTE_APPS="$(nvidia-smi "${VISIBLE_GPU_SELECTOR[@]}" --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader,nounits 2>/dev/null || true)"
+if ! GPU_COMPUTE_APPS="$(nvidia-smi "${VISIBLE_GPU_SELECTOR[@]}" --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader,nounits 2>&1)"; then
+    echo "ERROR: cannot query compute processes on allocated GPU(s)" >&2
+    printf '%s\n' "$GPU_COMPUTE_APPS" >&2
+    exit 42
+fi
 if [[ "$GPU_COMPUTE_APPS" =~ [^[:space:]] ]]; then
     echo "ERROR: allocated GPU(s) already contain compute processes; refusing to launch" >&2
     echo "gpu_uuid, pid, used_memory_mib" >&2

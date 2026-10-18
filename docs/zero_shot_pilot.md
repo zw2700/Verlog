@@ -99,8 +99,10 @@ before deciding. Do not pin a node merely because it looked free earlier.
 On 2026-10-17, `project` allows `qos_radio_freq` (available to Michal's account)
 and `qos_project_preempt`. The debug partition's current maximum is one hour.
 
-The launcher preserves `CUDA_VISIBLE_DEVICES` and checks compute processes only
-on the allocated physical GPU IDs. It never stops global Ray/process state. In
+The launcher preserves `CUDA_VISIBLE_DEVICES`, resolves allocated GPU UUIDs in
+the NVML view (including Slurm's cgroup device renumbering), and checks compute
+processes only on those UUIDs. A failed query aborts explicitly. It never stops
+global Ray/process state. In
 zero-shot mode no dataset or W&B login is required, and no PPO workers start.
 Real model execution also refuses to start without a Slurm GPU allocation;
 use `dry_run=true` for planning on the login node.

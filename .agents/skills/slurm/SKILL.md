@@ -261,8 +261,12 @@ Qwen3-4B pilot shape rather than inheriting the four-GPU training allocation.
 This mode does not require DATA_DIR or W&B login and starts no PPO/Ray workers.
 See `docs/zero_shot_pilot.md`. Inspect capacity read-only when the user has not
 yet chosen a run; preparing the code does not authorize submitting a job.
-The GPU occupancy guard queries only the allocated physical GPU selector so
-other jobs sharing the node are not mistaken for contamination of our device.
+The GPU occupancy guard resolves allocated GPU UUIDs before querying processes.
+On `gpu2`, device cgroups can expose physical GPU 5 as NVML/CUDA GPU 0 (observed
+in smoke job 87812). If NVML sees exactly the allocated number of GPUs, use that
+job-visible UUID set; otherwise resolve Slurm's physical IDs in the shared NVML
+view. Never overwrite `CUDA_VISIBLE_DEVICES`, query other jobs' processes as
+our occupancy check, or treat a failed device query as an occupied GPU.
 
 Environment overrides read by the canonical config include:
 

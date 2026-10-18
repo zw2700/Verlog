@@ -261,6 +261,10 @@ W&B project: unscripted
 
 Every project run must use `slurm/train_auton.sbatch` with private paths and optional secrets in the git-ignored `slurm/auton.env`. The launcher must preserve Slurm's `CUDA_VISIBLE_DEVICES`, pass `SLURM_CPUS_PER_TASK` explicitly to Ray, and use job-scoped Ray temporary state. Experiment changes belong in explicit Hydra overrides, not copied launchers. Use W&B project `unscripted`; do not set a default W&B entity, so each user logs to their active entity unless `WANDB_ENTITY` is explicitly set.
 
+Resolve the allocated GPU UUIDs before topology/occupancy queries: Slurm device
+cgroups can renumber a physical GPU in the NVML view. Keep the CUDA mask intact,
+scope process queries to the allocation, and fail explicitly if a query fails.
+
 Ask before major remote actions: creating remote directories, syncing the repo to Rhea, installing packages, submitting jobs, cancelling jobs, or changing long-running monitor state.
 
 ## W&B

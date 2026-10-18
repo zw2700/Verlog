@@ -286,10 +286,31 @@ def test_canonical_slurm_entrypoint_dispatches_without_loading_a_gpu(tmp_path, m
     assert arguments[-1] == "tag=test"
 
 
-def test_shared_setup_zero_shot_needs_no_dataset_and_checks_only_allocated_gpus(tmp_path):
+@pytest.mark.parametrize("layout", ["remapped", "shared"])
+@pytest.mark.parametrize("gpu_state", ["free", "busy", "query_failed"])
+def test_shared_setup_resolves_remapped_gpus_and_preserves_occupancy_guard(tmp_path, layout, gpu_state):
     (tmp_path / "bin").mkdir()
     nvidia = tmp_path / "bin/nvidia-smi"
-    nvidia.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$GPU_TEST_LOG"\n')
+    allocated = "GPU-00000000-0000-0000-0000-000000000005"
+    nvidia.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$*" >> "$GPU_TEST_LOG"\n'
+        f'allocated="{allocated}"\n'
+        'case "$*" in\n'
+        '  --query-gpu=uuid*)\n'
+        '    [ "$GPU_TEST_LAYOUT" != shared ] || echo GPU-00000000-0000-0000-0000-000000000000\n'
+        '    echo "$allocated" ;;\n'
+        '  "-i 5 --query-gpu=uuid"*)\n'
+        '    if [ "$GPU_TEST_LAYOUT" = shared ]; then echo "$allocated";\n'
+        '    else echo "No devices were found"; exit 6; fi ;;\n'
+        '  "-i $allocated --query-gpu=pci.bus_id"*) echo 00000000:81:00.0 ;;\n'
+        '  "-i $allocated --query-compute-apps="*)\n'
+        '    case "$GPU_TEST_STATE" in\n'
+        '      busy) echo "$allocated, 1234, 8000" ;;\n'
+        '      query_failed) echo "No devices were found"; exit 6 ;;\n'
+        '    esac ;;\n'
+        '  *--query-compute-apps=*) echo "An unallocated GPU has a process" ;;\n'
+        'esac\n'
+    )
     nvidia.chmod(0o700)
     env = {
         **os.environ,
@@ -302,11 +323,23 @@ def test_shared_setup_zero_shot_needs_no_dataset_and_checks_only_allocated_gpus(
         "SLURM_JOB_ID": "test",
         "SLURM_TMPDIR": str(tmp_path / "tmp"),
         "GPU_TEST_LOG": str(tmp_path / "gpu-calls.log"),
+        "GPU_TEST_LAYOUT": layout,
+        "GPU_TEST_STATE": gpu_state,
     }
     env.pop("DATA_DIR", None)
-    subprocess.run(
-        ["bash", "-c", f'source "{ROOT}/slurm/common.sh"'], env=env, check=True, capture_output=True, text=True
+    result = subprocess.run(
+        ["bash", "-c", f'source "{ROOT}/slurm/common.sh"; echo "CUDA_STILL=$CUDA_VISIBLE_DEVICES"'],
+        env=env,
+        capture_output=True,
+        text=True,
     )
     queries = (tmp_path / "gpu-calls.log").read_text().splitlines()
     compute_query = next(query for query in queries if "--query-compute-apps" in query)
-    assert compute_query.startswith("-i 5 ")
+    assert compute_query.startswith(f"-i {allocated} ")
+    if gpu_state == "free":
+        assert result.returncode == 0, result.stderr
+        assert "CUDA_STILL=0" in result.stdout
+    else:
+        assert result.returncode == 42
+        expected = "already contain compute processes" if gpu_state == "busy" else "cannot query compute processes"
+        assert expected in result.stderr
