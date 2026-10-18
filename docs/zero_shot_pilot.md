@@ -44,6 +44,30 @@ both launcher fixes are committed. No larger pilot was submitted.
 
 ## What runs
 
+The first format/cache validation, job **88467** on 2026-10-18, used commit
+`b5d5c417d1d0e8184804fefb7c8956240490a7ff`, five scenarios per condition, and the
+same one-H200/8-CPU/48G profile. All 15 games completed with five matched scenario
+hashes. Slurm elapsed time was 13m52s; the 39 `LLM.chat` batches (199 requests)
+took 59.00s in total. Slow shared-runtime/model startup dominated the rest.
+Read-only library/model prefetches were performed inside the allocation; this
+was not a controlled timing comparison with the earlier smoke.
+
+| Condition | Calls | Malformed | Invalid | Cached input fraction |
+|---|---:|---:|---:|---:|
+| baseline | 19 | 0 | 0 | 64.7% |
+| deliberation | 63 | 4 | 4 | 71.8% |
+| deliberation_no_communication | 117 | 14 | 25 | 78.0% |
+
+The remaining malformed outputs were readiness signals given content/closing
+tags, such as `<READY_TO_VOTE>3</READY_TO_VOTE>`. They were below the generation
+cap. The control also had eleven well-formed actions in the wrong phase. The
+next interface revision explicitly describes readiness/PASS as standalone
+tokens with no payload or closing tag, removes the GROUP message placeholder,
+and repeats phase-specific legal actions. The strict parser and game rules stay
+unchanged. A second small validation is required before the larger pilot.
+Artifacts for 88467 are under
+`materials/experiment-results/2026-10-18/deliberation-voting/format-cache-88467/`.
+
 `configs/zero_shot_pilot.yaml` defines 20 scenarios per condition, batch size 16,
 own continuous utility, temperature 0.7, top-p 1.0, and 512 output tokens per call.
 It uses the initial Qwen3-4B checkpoint. Native Qwen thinking is disabled, matching

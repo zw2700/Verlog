@@ -63,6 +63,8 @@ simultaneous winners. `deliberation.readiness_quorum` can override closure.
 Every response starts with an opening `<THINK>` tag, the professor's own reasoning,
 and a closing `</THINK>` tag, followed by exactly one phase-appropriate action.
 The instructions describe these parts without a literal reasoning placeholder.
+PASS and both readiness signals are standalone tokens with no content or closing
+tag. A readiness signal does not contain a candidate choice; only the ballot does.
 THINK is retained privately across all phases and
 does not spend the public-message budget. Normal model generation and context
 limits still apply. Malformed/unclosed THINK output fails closed: it is never

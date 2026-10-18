@@ -128,12 +128,17 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             "Your utility table is private. Other professors have their own private utility tables.\n"
             f"PAYOFFS: {payoff} No agreement gives everyone 0 selection reward.\n"
             "PROCEDURE:\n"
-            "1. DISCUSSION: Each professor gets one opportunity per round to send <GROUP>message</GROUP> "
-            "or <PASS>. The initial speaking order is shuffled; the first speaker rotates each round. "
+            "1. DISCUSSION: Each professor gets one opportunity per round to send their own message "
+            "between <GROUP> and </GROUP>, or emit the standalone token <PASS>. "
+            "Readiness and candidate votes are not allowed during discussion. "
+            "The initial speaking order is shuffled; the first speaker rotates each round. "
             "Statements and promises in messages do not cast ballots or bind anyone.\n"
             f"{communication_notice}"
             "2. READINESS: After a complete round, each professor independently submits <READY_TO_VOTE> "
-            "or <CONTINUE_DISCUSSION>. Submissions stay private; the count is announced only after all respond. "
+            "or <CONTINUE_DISCUSSION>. These are complete standalone tokens: append no text, student "
+            "number, or closing tag. Readiness asks only whether discussion should end, not which "
+            "student to select. Candidate choices belong only to the later BALLOT phase. "
+            "Submissions stay private; the count is announced only after all respond. "
             f"At least {self.readiness_quorum} ready signals close discussion. Signals reset each check.\n"
             f"3. DEADLINE: Discussion closes after {self.max_discussion_rounds} rounds or when its "
             f"{self.token_budget}-token public-message budget is exhausted. Either deadline opens voting.\n"
@@ -192,9 +197,19 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             raise ValueError(f"unknown professor id {agent_id!r}")
         system = self.build_system_prompt(agent_id)
         instructions = {
-            "discussion": "<GROUP>message</GROUP> or <PASS>",
-            "readiness": "<READY_TO_VOTE> or <CONTINUE_DISCUSSION>",
-            "ballot": "<VOTE>N</VOTE>",
+            "discussion": (
+                "one GROUP block containing your own message, or the standalone token <PASS>. "
+                "Do not output readiness or voting actions in this phase."
+            ),
+            "readiness": (
+                "exactly <READY_TO_VOTE> or <CONTINUE_DISCUSSION>. "
+                "Each is a complete standalone token with NO content or closing tag. "
+                "Do not include a student number, message, or VOTE block."
+            ),
+            "ballot": (
+                "one <VOTE>N</VOTE> block, replacing N with a single student index "
+                f"0 to {self.students_per_batch - 1}."
+            ),
             "done": "Episode finished. No further action.",
         }[self.phase]
         table = []

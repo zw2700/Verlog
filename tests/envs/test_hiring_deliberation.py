@@ -125,6 +125,20 @@ def test_readiness_waits_for_everyone_and_uses_completed_round():
     assert wrapped.env.episode_state["readiness_results"] == [{"round": 1, "ready_count": 2}]
 
 
+@pytest.mark.parametrize(
+    "action", ["<READY_TO_VOTE>0</READY_TO_VOTE>", "<CONTINUE_DISCUSSION>text</CONTINUE_DISCUSSION>"]
+)
+def test_readiness_signal_with_payload_remains_invalid_and_private(action):
+    wrapped = make_env()
+    discussion_round(wrapped)
+    actor = wrapped.env.episode_state["active_agent"]
+    _, rewards, _, _, _ = act(wrapped, action)
+    assert rewards[actor] < 0
+    assert wrapped.env._readiness[actor] is False
+    for other in set(AGENTS) - {actor}:
+        assert action not in view(wrapped, other)
+
+
 def test_readiness_is_not_sticky_and_first_speaker_rotates():
     wrapped = make_env()
     first_order = discussion_round(wrapped)
