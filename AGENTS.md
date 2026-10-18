@@ -103,6 +103,9 @@ See `docs/deliberation_voting_protocol.md` for the rules and launch examples.
 Preserve the actor visibility boundary: public GROUP messages plus only the
 observing professor's private thoughts/actions/utilities. Readiness is announced
 only after all submit, and sealed ballots never enter another actor's prompt.
+Voting is always simultaneous against frozen public discussion; there is no
+public-ballot mode. Test unchanged unsubmitted professors' observations and
+identical fixed-profile outcomes across ballot submission orders.
 Privileged Gym info/episode logs are research metadata, never actor observations.
 Test through `make_async_ticker_env`, reset/step, and
 `get_observation_for_agent` (also used for bootstrap), including malformed outputs

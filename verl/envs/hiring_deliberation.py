@@ -39,7 +39,7 @@ class DeliberationHistory(HistoryManager):
             if event.get("private"):
                 if event["agent_id"] == agent_id:
                     visible.append(event)
-            elif event["message_type"] in {"communication", "vote", "wait"}:
+            elif event["message_type"] in {"communication", "wait"}:
                 visible.append(event)
         # Insertion order is the protocol's chronology; private reasoning length
         # must not reorder messages or expose another professor's thinking time.
@@ -64,6 +64,9 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
         if n < 2 or len(set(self.professor_ids)) != n:
             raise ValueError("deliberation_voting requires at least two distinct professor IDs")
         options = config.get("deliberation", {})
+        unknown_options = set(options) - {"max_rounds", "readiness_quorum"}
+        if unknown_options:
+            raise ValueError(f"Unknown deliberation options: {sorted(unknown_options)}")
         self.max_discussion_rounds = options.get("max_rounds", 10)
         quorum = options.get("readiness_quorum")
         self.readiness_quorum = n - 1 if quorum is None else quorum
@@ -74,9 +77,6 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
         if not math.isfinite(self.vote_threshold) or not 0 < self.vote_threshold <= 1:
             raise ValueError("vote_threshold must be in (0, 1]")
         self.decision_quorum = max(n // 2 + 1, math.ceil(n * self.vote_threshold))
-        self.ballot_visibility = options.get("ballot_visibility", "sealed")
-        if self.ballot_visibility not in {"sealed", "public"}:
-            raise ValueError("deliberation.ballot_visibility must be sealed or public")
         if self.token_budget <= 0:
             raise ValueError("token_budget must be positive")
         # A custom baseline system prompt would contradict the new action space.
@@ -127,12 +127,9 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             f"{self.token_budget}-token public-message budget is exhausted. Either deadline opens voting.\n"
             "4. BALLOT: Each professor submits exactly one binding <VOTE>N</VOTE>, "
             f"where N is a student index from 0 to {self.students_per_batch - 1}. "
-            + (
-                "Ballots stay private, including after the election. Earlier submissions are hidden. "
-                if self.ballot_visibility == "sealed"
-                else "Ballots are public as they are submitted. "
-            )
-            + f"The result is determined ONLY after every professor's ballot opportunity, "
+            "All professors vote independently against the same frozen public discussion. "
+            "Ballots stay private, including after the election. Earlier submissions are hidden. "
+            "The result is determined ONLY after every professor's ballot opportunity, "
             f"and requires {self.decision_quorum} matching valid ballots. Otherwise there is no agreement. "
             "An invalid/missing ballot is an abstention. There is one ballot round.\n"
             "FORMAT: Begin every response with <THINK>private reasoning</THINK>, followed by exactly "
@@ -331,26 +328,16 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
                 text = "Invalid response; this opportunity was consumed without a valid action."
             else:
                 text = parsed["action"]
-            if phase == "ballot" and self.ballot_visibility == "public" and "choice" in parsed:
-                self.history_manager.add_public(
-                    actor,
-                    text,
-                    turn,
-                    self._count_tokens(parsed["action"]),
-                    "vote",
-                    {**fields, "choice": parsed["choice"]},
-                )
-            else:
-                choice_fields = {"choice": parsed["choice"]} if "choice" in parsed else {}
-                self.history_manager.add_private_action(
-                    actor,
-                    text,
-                    turn,
-                    self._count_tokens(parsed["action"]),
-                    message_type=message_type,
-                    **fields,
-                    **choice_fields,
-                )
+            choice_fields = {"choice": parsed["choice"]} if "choice" in parsed else {}
+            self.history_manager.add_private_action(
+                actor,
+                text,
+                turn,
+                self._count_tokens(parsed["action"]),
+                message_type=message_type,
+                **fields,
+                **choice_fields,
+            )
         self._advance_phase()
         self._sync_state()
         done = self.phase == "done"
@@ -437,23 +424,21 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
         metrics["negotiation_dynamics"]["turns_to_consensus"] = (
             self.episode_state["step_count"] if self.episode_state["consensus_reached"] else None
         )
-        if self.ballot_visibility == "sealed":
-            # Sequential vote-following metrics have no behavioral meaning
-            # when no voter sees earlier ballots. Drop them from means.
-            metrics["negotiation_dynamics"]["second_vote_matches_first"] = None
-            metrics["voting_dynamics"]["minority_persistence_total"] = None
-            for values in metrics["voting_dynamics"]["by_agent"].values():
-                values["minority_persistence"] = None
-            for key in metrics["influence"]:
-                if "plurality" in key:
-                    metrics["influence"][key] = None
+        # Sequential vote-following metrics have no behavioral meaning for a
+        # simultaneous ballot. No voter observes a running tally.
+        metrics["negotiation_dynamics"]["second_vote_matches_first"] = None
+        metrics["voting_dynamics"]["minority_persistence_total"] = None
+        for values in metrics["voting_dynamics"]["by_agent"].values():
+            values["minority_persistence"] = None
+        for key in metrics["influence"]:
+            if "plurality" in key:
+                metrics["influence"][key] = None
         metrics["deliberation"] = {
             "rounds": self.discussion_round,
             "readiness_checks": len(self._readiness_results),
             **{f"{phase}_turns": count for phase, count in self._phase_turns.items()},
             "valid_ballots": len(self.episode_state["votes"]),
             "abstentions": len(self.professor_ids) - len(self.episode_state["votes"]),
-            "sealed_ballots": int(self.ballot_visibility == "sealed"),
             **{
                 f"closed_by_{reason}": int(self._closure_reason == reason)
                 for reason in ("readiness", "token_budget", "round_limit")

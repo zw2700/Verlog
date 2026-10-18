@@ -43,11 +43,13 @@ condition, including shared rewards; it does not ask agents to cooperate.
    Discussion also ends after the readiness check of round 10, regardless of
    readiness. No speech is mandatory. These are initial configurable budgets,
    not optimized mechanism parameters.
-4. **Ballot:** Each professor gets exactly one `<VOTE>N</VOTE>` opportunity. All
-   submissions are collected before resolution, even when two already match.
-   Ballots are sealed by default and never appear in another actor's observation,
-   including after the election. Only the winner/no-agreement and aggregate tally
-   are announced. Invalid or missing ballots count as abstentions.
+4. **Ballot:** Each professor gets exactly one `<VOTE>N</VOTE>` opportunity against
+   the same frozen public discussion. Voting is always simultaneous: no new public
+   information appears while submissions are collected. All ballots are collected
+   before resolution, even when two already match. Ballots are sealed and never
+   appear in another actor's observation, including after the election. Only the
+   winner/no-agreement and aggregate tally are announced. Invalid or missing
+   ballots count as abstentions.
 5. **Outcome:** A strict majority is required (two of three at the default
    threshold). A three-way split or insufficient valid support ends with no
    agreement and zero terminal selection reward. There is no runoff or return
@@ -104,9 +106,11 @@ uses the final collected ballot. Sequential vote-following/plurality-persistence
 metrics are marked inapplicable for sealed ballots instead of being presented as
 evidence of herding.
 
-`envs.env_config.deliberation.ballot_visibility=public` is a separate ablation.
-It reveals submitted ballots but preserves thought privacy and complete ballot
-collection. Phase separation and ballot secrecy should be compared separately.
+There is one voting protocol, with no public/private-ballot variant. Internal
+model calls may execute serially, but unsubmitted professors' observations stay
+unchanged while ballots are collected. All submission orders therefore provide
+the same information and resolve the same fixed ballot profile identically.
+The old asynchronous public-vote protocol remains a separate baseline.
 
 ## Verification
 
@@ -123,7 +127,8 @@ per-professor observations, in all phases. Counterfactual tests change one
 professor's thoughts or pending choice while holding public actions fixed and
 assert that other professors' prompts are byte-identical. They also cover
 malformed reasoning, split votes, abstentions, deadlines, reward variants,
-context trimming, reset isolation, Hydra composition, and the original baseline.
+context trimming, reset isolation, Hydra composition, all six ballot submission
+orders, and the original baseline.
 
 Broader baseline check: the existing
 `tests/envs/test_hiring_env_metrics.py::test_communication_process_metrics_from_group_messages`

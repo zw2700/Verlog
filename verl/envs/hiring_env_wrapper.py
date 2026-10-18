@@ -239,7 +239,7 @@ def make_async_ticker_env(config: dict[str, Any], tokenizer=None) -> AsyncTicker
             - reward_optimum_atol: optional absolute tolerance for optimum ties
             - reward_alpha: float (for "combined" mode)
             - protocol: "async_ticker" (baseline) or "deliberation_voting"
-            - deliberation: max_rounds, readiness_quorum, ballot_visibility
+            - deliberation: max_rounds, readiness_quorum
             - system_prompt: str or Dict[str, str]
             - prompt_length: int (optional, for token-based truncation)
             - max_prompt_words: int (optional, for word-based truncation)

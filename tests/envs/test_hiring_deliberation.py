@@ -2,6 +2,7 @@
 
 import sys
 import types
+from itertools import permutations
 from pathlib import Path
 
 import numpy as np
@@ -351,16 +352,27 @@ def test_invalid_ballot_abstains_but_other_two_can_elect(invalid):
         assert "NOT_PUBLIC_IN_BALLOT" not in view(wrapped, agent)
 
 
-def test_public_ballot_ablation_preserves_private_thoughts_and_waits_for_all():
-    wrapped = make_env(deliberation={"ballot_visibility": "public"})
+@pytest.mark.parametrize("order", list(permutations(AGENTS)))
+def test_ballot_submission_order_cannot_change_a_voters_information_or_the_result(order):
+    wrapped = make_env()
     open_ballot(wrapped)
-    voter = wrapped.env.episode_state["active_agent"]
-    act(wrapped, "<VOTE>1</VOTE>", "SECRET_PUBLIC_VOTER")
-    for observer in set(AGENTS) - {voter}:
-        assert "<VOTE>1</VOTE>" in view(wrapped, observer)
-        assert "SECRET_PUBLIC_VOTER" not in view(wrapped, observer)
-    result = act(wrapped, "<VOTE>1</VOTE>")
-    assert not any(result[2].values())
+    frozen_observations = {agent: view(wrapped, agent) for agent in AGENTS}
+    # Change only the order in which the simulator receives the fixed ballot
+    # profile. Deliberation, private histories, and utilities stay identical.
+    wrapped.env._round_order = list(order)
+    wrapped.env.episode_state["active_agent"] = order[0]
+    choices = {"prof_a": 0, "prof_b": 0, "prof_c": 1}
+    for index, actor in enumerate(order):
+        assert wrapped.env.episode_state["active_agent"] == actor
+        assert view(wrapped, actor) == frozen_observations[actor]
+        result = act(wrapped, f"<VOTE>{choices[actor]}</VOTE>", f"PRIVATE_BALLOT_{actor}")
+        if index < len(order) - 1:
+            assert not any(result[2].values())
+            for unsubmitted in order[index + 1 :]:
+                assert view(wrapped, unsubmitted) == frozen_observations[unsubmitted]
+    assert all(result[2].values())
+    assert wrapped.env.episode_state["consensus_choice"] == 0
+    assert result[1] == {"prof_a": 3.0, "prof_b": 3.0, "prof_c": 2.0}
 
 
 def test_private_utility_changes_cannot_affect_someone_elses_prompt():
@@ -429,6 +441,8 @@ def test_wrong_professor_cannot_submit_and_invalid_protocol_is_rejected():
     assert wrapped.env.episode_state["step_count"] == 0
     with pytest.raises(ValueError, match="Unknown hiring protocol"):
         make_env(protocol="typo")
+    with pytest.raises(ValueError, match="Unknown deliberation options"):
+        make_env(deliberation={"ballot_visibility": "public"})
 
 
 def test_episode_logging_identifies_protocol_phase_and_control_actions():
@@ -486,6 +500,5 @@ def test_hydra_preset_composes_with_reward_comparison(monkeypatch, mode):
     wrapped = make_async_ticker_env(env_config)
     assert wrapped.env.max_discussion_rounds == 10
     assert wrapped.env.readiness_quorum == 2
-    assert wrapped.env.ballot_visibility == "sealed"
     assert wrapped.env.reward_mode == mode
     assert env_config["max_steps"] is None
