@@ -4,8 +4,43 @@ The code is prepared for one local GPU and Rhea's existing shared Verlog runtime
 Python 3.10.20, vLLM 0.10.0, PyTorch 2.7.1, and Transformers 4.55.4 (read-only
 inspection on 2026-10-17). Qwen3-4B revision
 `1cfa9a7208912126459214e8b04321603b3df60c` is already cached in
-`/zfsauton/scratch/mwilinsk/.cache/huggingface`. No GPU job was launched as part
-of preparation; actual model generation still needs a Slurm allocation.
+`/zfsauton/scratch/mwilinsk/.cache/huggingface`. GPU execution was subsequently
+checked in the smoke test below; the larger pilot has not been launched.
+
+## H200 smoke test: 2026-10-17
+
+Job **87819**, `delib-smoke-h200`, completed on `gpu2` with exit code 0 in
+**3m51s**, using commit `ae58ab5378a8bd166bfe4bc848292aade3298e4f` and hiring
+submodule `aa7da2bc9947289eb2261fc3d0bf6f1875f4a631`. The request was one H200,
+8 CPUs, 48G host RAM, 30 minutes, `project / qos_radio_freq`. Hydra overrides
+were `num_episodes=1 tag=deliberation-smoke`: one matched scenario, three games.
+All completed; scenario pairing was verified. No GPU out-of-memory error occurred.
+The model used 7.5552 GiB; sampled device allocation reached 114493 MiB,
+including the large KV cache reserved by the 0.8 memory setting. This sampled
+value is not a measured instantaneous peak or the model's minimum requirement.
+
+| Condition | Model calls | Malformed responses | Invalid actions | Agreement |
+|---|---:|---:|---:|---|
+| baseline | 6 | 0 | 0 | yes |
+| deliberation | 63 | 46 | 53 | no |
+| deliberation_no_communication | 63 | 53 | 59 | no |
+
+Malformed and invalid counts overlap. The new protocol is **not yet ready for
+an interpretable larger comparison**: the model frequently copied the literal
+`<THINK>private reasoning</THINK>` template, put its actual reasoning outside
+that block, and repeated old actions across phases. The strict parser rejects
+these responses rather than risking publication of unmarked private reasoning.
+The traces show a format-following problem; one scenario does not establish
+mechanism performance. Clarifying the response interface and rechecking it is
+the next step; do not relax privacy filtering or silently salvage malformed votes.
+
+Remote artifacts are under
+`/zfsauton/scratch/mwilinsk/unscripted/experiments/deliberation-voting-ae58ab53/logs/deliberation-smoke_87819/`.
+Local copies, stdout/stderr, GPU samples, and submission details are in
+`materials/experiment-results/2026-10-17/deliberation-voting/smoke-87819/`
+under the surrounding project directory. Earlier attempts 87812 and 87813
+exposed, respectively, the GPU-renumbering guard and CUDA/fork startup failures;
+both launcher fixes are committed. No larger pilot was submitted.
 
 ## What runs
 
