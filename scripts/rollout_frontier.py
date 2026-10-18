@@ -45,6 +45,7 @@ class Completion:
     response_tokens: int | None = None
     raw: dict[str, Any] | None = None
     vote_metadata: dict[str, Any] | None = None
+    cached_prompt_tokens: int | None = None
 
 
 class ProviderError(RuntimeError):
@@ -298,9 +299,10 @@ class FakeVoteClient(BaseClient):
 
     def complete(self, messages: list[dict[str, str]]) -> Completion:
         context = messages[-1]["content"]
-        if "PHASE: discussion;" in context:
+        phase = episode_logging.extract_turn_phase(context)
+        if phase == "discussion":
             action = "<PASS>"
-        elif "PHASE: readiness;" in context:
+        elif phase == "readiness":
             action = "<READY_TO_VOTE>"
         else:
             action = f"<VOTE>{self.student}</VOTE>"
@@ -595,6 +597,8 @@ def episode_rollout(
         )
         turn_entry["prompt_token_source"] = prompt_token_source
         turn_entry["response_token_source"] = response_token_source
+        if completion.cached_prompt_tokens is not None:
+            turn_entry["cached_prompt_tokens"] = completion.cached_prompt_tokens
         if request_context is not None:
             turn_entry["sampling_seed"] = request_context.get("sampling_seed")
         if include_raw_response and completion.raw is not None:
@@ -659,6 +663,7 @@ def episode_rollout(
     metrics = flat_info.get("metrics") or {}
     llm_input_tokens = sum(int(turn.get("prompt_tokens") or 0) for turn in turns)
     llm_output_tokens = sum(int(turn.get("response_tokens") or 0) for turn in turns)
+    cache_reported_turns = [turn for turn in turns if "cached_prompt_tokens" in turn]
     return {
         "seed": seed,
         "scenario_sha256": scenario_hash,
@@ -668,6 +673,10 @@ def episode_rollout(
         "llm_input_tokens": llm_input_tokens,
         "llm_output_tokens": llm_output_tokens,
         "llm_total_tokens": llm_input_tokens + llm_output_tokens,
+        "llm_cached_input_tokens": (
+            sum(turn["cached_prompt_tokens"] for turn in cache_reported_turns) if cache_reported_turns else None
+        ),
+        "llm_cache_reported_input_tokens": sum(turn["prompt_tokens"] for turn in cache_reported_turns),
         "consensus": bool((flat_info.get("episode_state") or {}).get("consensus_reached", False)),
         "chosen_student_rank_global": metrics.get("outcome/chosen_student_rank_global"),
         "social_welfare_efficiency": metrics.get("social_welfare/efficiency"),

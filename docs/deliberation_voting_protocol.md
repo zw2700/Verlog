@@ -60,8 +60,10 @@ For larger groups, readiness defaults to N−1. The decision quorum is the great
 of a strict majority and `ceil(vote_threshold * N)`, so there cannot be two
 simultaneous winners. `deliberation.readiness_quorum` can override closure.
 
-Every response starts with `<THINK>private reasoning</THINK>` followed by exactly
-one phase-appropriate action. THINK is retained privately across all phases and
+Every response starts with an opening `<THINK>` tag, the professor's own reasoning,
+and a closing `</THINK>` tag, followed by exactly one phase-appropriate action.
+The instructions describe these parts without a literal reasoning placeholder.
+THINK is retained privately across all phases and
 does not spend the public-message budget. Normal model generation and context
 limits still apply. Malformed/unclosed THINK output fails closed: it is never
 treated as a public fallback message. Invalid discussion actions become passes,
@@ -93,6 +95,17 @@ actor prompts. The wrapper's `get_observation_for_agent` is also used for
 per-professor bootstrap rows and obeys the same visibility filter. A privileged
 critic may still receive utility tables via the existing explicit critic mode;
 this never changes actor-visible inputs.
+
+Prompt layout places the common rules in the system message, then the observing
+professor's identity and private utility table, then the growing filtered history.
+Current phase, round, budget, completed readiness checks, and allowed actions
+appear at the end. Changing turn metadata therefore does not invalidate the
+unchanged history prefix. The system message is identical across professors in
+the same condition; each private table stays in its owner's user message.
+The history remains chronological, with the same visibility filter and trimming.
+This is prefix reuse, not a promise of fully append-only model-output reuse:
+the current-turn suffix is replaced and old history may be trimmed. The strict
+parser, allowed actions, rewards, and voting rules are unchanged.
 
 ## Metrics and controls
 

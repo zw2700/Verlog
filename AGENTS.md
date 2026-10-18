@@ -113,6 +113,12 @@ and counterfactual hidden-state changes. Run `tests/envs/test_hiring_deliberatio
 The preset disables the old step cap; finite discussion-round/token limits open
 the reserved final ballot instead of failing the episode before voting.
 
+Keep shared system rules and episode-static private data before the filtered
+history, with changing phase/round/budget/action instructions at the end. Preserve
+the growing history prefix until trimming is necessary. Describe THINK's opening
+tag, own reasoning, and closing tag without a literal reasoning placeholder.
+Never relax the strict parser or publish unmarked reasoning to improve validity.
+
 ### Zero-shot protocol pilot
 
 `VERLOG_JOB_MODE=zero_shot` selects `scripts/zero_shot_pilot.py` through the same

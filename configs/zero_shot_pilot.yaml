@@ -37,6 +37,7 @@ model:
   gpu_memory_utilization: 0.8
   max_model_len: 8192
   enforce_eager: false
+  enable_prefix_caching: true
 
 sampling:
   temperature: 0.7

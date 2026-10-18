@@ -49,6 +49,12 @@ own continuous utility, temperature 0.7, top-p 1.0, and 512 output tokens per ca
 It uses the initial Qwen3-4B checkpoint. Native Qwen thinking is disabled, matching
 the existing template setting; the environment's explicit private THINK blocks
 remain available in all phases. No PPO, replay, critic, or shaping is introduced.
+The updated deliberation prompt uses shared fixed rules, the observing
+professor's identity/private utility table, growing visible history, and current
+turn metadata at the end. It explicitly describes how to enclose the professor's
+own reasoning instead of showing a literal reasoning placeholder. The original
+baseline prompt, strict parser, payoffs, and phase-transition rules are unchanged.
+The 2026-10-17 smoke above predates this update; a new real-model check is required.
 Each model request has a recorded seed derived from the scenario, professor,
 phase, and that professor's opportunity count. Batch width and internal ballot
 submission position do not reassign a professor's sampling seed.
@@ -168,6 +174,17 @@ immediately; failures preserve evidence and mark the manifest as failed. Partial
 runs are not silently resumed or mixed with new settings. All private thoughts
 and ballots remain available in privileged research logs, never in another
 professor's actor prompt. Bootstrap and zero-shot observations use the same filter.
+
+Prefix caching is enabled explicitly. When vLLM reports `num_cached_tokens`, each
+turn records `cached_prompt_tokens`, and game/condition summaries report cached
+input tokens and the hit fraction over input tokens with reported cache data.
+Missing reports remain unavailable, not zero hits. The manifest's `inference`
+section records batch count, request count, and total wall time inside `LLM.chat`.
+That batch wall time includes prefill and decoding; it is not first-token latency
+or an isolated decoding-throughput measurement. These metrics allow cache reuse
+to be measured without claiming an unmeasured speedup. Changing metadata at the
+end preserves the earlier prefix; the replaced suffix, re-rendered outputs,
+trimming, and cache eviction can still require recomputation.
 
 Inspect invalid-action counts and traces before interpreting outcomes. Report
 GROUP messages and speaking professors separately from readiness/ballot calls;

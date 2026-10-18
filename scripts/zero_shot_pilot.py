@@ -94,10 +94,18 @@ class LocalVLLMClient:
 
         self.sampling_params = SamplingParams
         self.sampling = config["sampling"]
+        self.performance = {"batches": 0, "requests": 0, "batch_wall_seconds": 0.0}
         model = config["model"]
         options = {
             key: model[key]
-            for key in ("tensor_parallel_size", "dtype", "gpu_memory_utilization", "max_model_len", "enforce_eager")
+            for key in (
+                "tensor_parallel_size",
+                "dtype",
+                "gpu_memory_utilization",
+                "max_model_len",
+                "enforce_eager",
+                "enable_prefix_caching",
+            )
         }
         if model["revision"] is not None:
             options.update(revision=model["revision"], tokenizer_revision=model["revision"])
@@ -114,17 +122,22 @@ class LocalVLLMClient:
             )
             for seed in seeds
         ]
+        started = time.perf_counter()
         outputs = self.llm.chat(
             messages,
             sampling_params=sampling_params,
             use_tqdm=False,
             chat_template_kwargs={"enable_thinking": self.sampling["enable_native_thinking"]},
         )
+        self.performance["batch_wall_seconds"] += time.perf_counter() - started
+        self.performance["batches"] += 1
+        self.performance["requests"] += len(outputs)
         return [
             Completion(
                 text=result.outputs[0].text,
                 prompt_tokens=len(result.prompt_token_ids),
                 response_tokens=len(result.outputs[0].token_ids),
+                cached_prompt_tokens=result.num_cached_tokens,
             )
             for result in outputs
         ]
@@ -151,6 +164,8 @@ def summarize(results, conditions):
     summary = {}
     for condition in conditions:
         rows = [row for row in results if row["condition"] == condition]
+        reported_tokens = sum(row["llm_cache_reported_input_tokens"] for row in rows)
+        cached_tokens = sum(row["llm_cached_input_tokens"] or 0 for row in rows)
         summary[condition] = {
             "episodes": len(rows),
             "agreement_rate": mean(float(row["consensus"]) for row in rows),
@@ -164,6 +179,9 @@ def summarize(results, conditions):
             "invalid_actions": sum(row["invalid_actions"] for row in rows),
             "total_input_tokens": sum(row["llm_input_tokens"] for row in rows),
             "total_output_tokens": sum(row["llm_output_tokens"] for row in rows),
+            "cache_reported_input_tokens": reported_tokens,
+            "cached_input_tokens": cached_tokens if reported_tokens else None,
+            "prefix_cache_hit_fraction": cached_tokens / reported_tokens if reported_tokens else None,
         }
     return summary
 
@@ -282,12 +300,18 @@ def run_pilot(cfg, client=None):
             completed_episodes=len(results),
             elapsed_seconds=time.monotonic() - started,
             paired_scenarios_verified=len(scenario_hashes),
+            inference=getattr(client, "performance", None),
         )
         write_json(output / "manifest.json", plan)
         print(json.dumps(summary, indent=2, sort_keys=True))
         return summary
     except Exception as exc:
-        plan.update(status="failed", error_type=type(exc).__name__, error=str(exc)[:1000])
+        plan.update(
+            status="failed",
+            error_type=type(exc).__name__,
+            error=str(exc)[:1000],
+            inference=getattr(client, "performance", None),
+        )
         write_json(output / "manifest.json", plan)
         raise
 

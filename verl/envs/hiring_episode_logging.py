@@ -108,6 +108,11 @@ def extract_turn_context(messages: list[dict[str, Any]]) -> str:
     if not user_content:
         return "(no user turn context found)"
 
+    if "\n=== CURRENT TURN ===\n" in user_content:
+        # The utility table precedes history; quoted legacy markers in history
+        # must not cut the actual observation out of the research log.
+        return user_content.strip()
+
     marker = "=== YOUR TURN"
     marker_idx = user_content.find(marker)
     if marker_idx >= 0:
@@ -116,10 +121,20 @@ def extract_turn_context(messages: list[dict[str, Any]]) -> str:
 
 
 def extract_utilities_from_context(turn_context: str) -> dict[str, float]:
+    if "\n=== CURRENT TURN ===\n" in turn_context:
+        turn_context = turn_context.split("\n\nVISIBLE HISTORY (chronological):\n", 1)[0]
     utilities: dict[str, float] = {}
     for match in UTILITY_ROW_PATTERN.finditer(turn_context):
         utilities[str(int(match.group("student")))] = float(match.group("utility"))
     return utilities
+
+
+def extract_turn_phase(turn_context: str) -> str | None:
+    # Current state follows history. A professor may quote an old phase or turn
+    # marker, so prefer the final authoritative state section.
+    current = turn_context.rsplit("\n=== CURRENT TURN ===\n", 1)[-1]
+    match = PHASE_PATTERN.search(current)
+    return match[1] if match else None
 
 
 def build_episode_turn_entry(
@@ -138,7 +153,6 @@ def build_episode_turn_entry(
 ) -> dict[str, Any]:
     turn_context = extract_turn_context(messages)
     action_text = extract_action_text(output_text)
-    phase_match = PHASE_PATTERN.search(turn_context)
     return {
         "ts": f"{timestamp}Z",
         "epoch": epoch,
@@ -147,7 +161,7 @@ def build_episode_turn_entry(
         "turn_id": turn_id,
         "episode_turn_id": episode_turn_id,
         "agent": agent_id,
-        "phase": phase_match[1] if phase_match else None,
+        "phase": extract_turn_phase(turn_context),
         "prompt_tokens": prompt_tokens,
         "response_tokens": response_tokens,
         "turn_context": turn_context,

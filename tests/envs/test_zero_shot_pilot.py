@@ -55,6 +55,7 @@ def test_batched_pilot_pairs_scenarios_and_writes_auditable_artifacts(tmp_path):
         assert summary[condition]["episodes"] == 3
         assert summary[condition]["agreement_rate"] == 1
         assert summary[condition]["invalid_actions"] == 0
+        assert summary[condition]["prefix_cache_hit_fraction"] is None
         shard = output / condition / "episodes/episodes.worker00.jsonl"
         episodes = [json.loads(line) for line in shard.read_text().splitlines()]
         assert len(episodes) == 3
@@ -85,13 +86,23 @@ def test_actual_model_inputs_keep_thoughts_private_and_withhold_control_messages
                     action = "<READY_TO_VOTE>"
                 else:
                     action = "<VOTE>0</VOTE>"
-                results.append(frontier.Completion(text=f"<THINK>SECRET_THOUGHT_{actor}</THINK>{action}"))
+                results.append(
+                    frontier.Completion(
+                        text=f"<THINK>SECRET_THOUGHT_{actor}</THINK>{action}",
+                        prompt_tokens=4,
+                        response_tokens=3,
+                        cached_prompt_tokens=2,
+                    )
+                )
             return results
 
     config = config_for(tmp_path)
     summary = pilot.run_pilot(config, client=SpyClient())
     assert summary["deliberation"]["mean_public_messages"] == 3
     assert summary["deliberation_no_communication"]["mean_public_messages"] == 0
+    for condition in config["conditions"]:
+        assert summary[condition]["prefix_cache_hit_fraction"] == 0.5
+        assert summary[condition]["cache_reported_input_tokens"] == 2 * summary[condition]["cached_input_tokens"]
     normal = json.loads(
         (Path(config["output_dir"]) / "deliberation/episodes/episodes.worker00.jsonl").read_text().splitlines()[0]
     )
@@ -102,6 +113,7 @@ def test_actual_model_inputs_keep_thoughts_private_and_withhold_control_messages
     )
     assert normal["tokens_used"] == control["tokens_used"] == 3
     assert control["flat_metrics"]["deliberation/withheld_messages"] == 3
+    assert all(turn["cached_prompt_tokens"] == 2 for turn in normal["turns"])
 
 
 def test_dry_run_creates_no_output_or_model(tmp_path):
@@ -224,7 +236,9 @@ def test_local_vllm_adapter_uses_batched_chat_request_seeds_and_real_token_count
             calls["chat"] = kwargs
             return [
                 types.SimpleNamespace(
-                    prompt_token_ids=[1, 2], outputs=[types.SimpleNamespace(text="answer", token_ids=[3, 4, 5])]
+                    prompt_token_ids=[1, 2],
+                    outputs=[types.SimpleNamespace(text="answer", token_ids=[3, 4, 5])],
+                    num_cached_tokens=1,
                 )
                 for _ in messages
             ]
@@ -236,6 +250,11 @@ def test_local_vllm_adapter_uses_batched_chat_request_seeds_and_real_token_count
     assert calls["chat"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert results[0].prompt_tokens == 2
     assert results[0].response_tokens == 3
+    assert results[0].cached_prompt_tokens == 1
+    assert client.performance["batches"] == 1
+    assert client.performance["requests"] == 2
+    assert client.performance["batch_wall_seconds"] >= 0
+    assert calls["init"]["enable_prefix_caching"] is True
     assert client.tokenizer == "tokenizer"
 
 

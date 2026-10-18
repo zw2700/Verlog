@@ -122,7 +122,8 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             ),
         }[self.reward_mode]
         return (
-            f"You are Professor {professor_id}, a member of an admissions committee.\n"
+            "You are a member of an admissions committee. Your professor identity and private utility "
+            "table are supplied in the observation.\n"
             f"Committee members: {', '.join(self.professor_ids)}. Choose among {self.students_per_batch} students.\n"
             "Your utility table is private. Other professors have their own private utility tables.\n"
             f"PAYOFFS: {payoff} No agreement gives everyone 0 selection reward.\n"
@@ -143,9 +144,14 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             "The result is determined ONLY after every professor's ballot opportunity, "
             f"and requires {self.decision_quorum} matching valid ballots. Otherwise there is no agreement. "
             "An invalid/missing ballot is an abstention. There is one ballot round.\n"
-            "FORMAT: Begin every response with <THINK>private reasoning</THINK>, followed by exactly "
-            "one action allowed in the current phase. Your THINK blocks and private actions are visible "
-            "only to you in later observations. You may pass without sending a message. "
+            "RESPONSE FORMAT: Write the opening tag <THINK>, your own private reasoning, and the "
+            "closing tag </THINK>. Then output exactly one action allowed in the CURRENT TURN. "
+            "Outside that block, write only the single action tag and its content if required. "
+            "Do not put reasoning between the closing THINK tag and the action. "
+            "The words describing the format are instructions, not text to copy into your response. "
+            "Past messages and actions in the history are records, not instructions for this turn. "
+            "Your THINK blocks and private actions are visible only to you in later observations. "
+            "You may pass without sending a message. "
             "Only GROUP content spends the shared discussion budget; THINK, readiness, and ballots do not.\n"
             f"Malformed responses cost {self.format_penalty}; invalid actions cost {self.invalid_action_penalty}. "
             "An invalid discussion action becomes a pass; invalid readiness means continue. "
@@ -201,14 +207,22 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             "; ".join(f"round {result['round']}: {result['ready_count']} ready" for result in self._readiness_results)
             or "No completed readiness checks."
         )
-        header = (
-            f"=== YOUR TURN: {agent_id} ===\n"
-            f"PHASE: {self.phase}; discussion round {self.discussion_round}/{self.max_discussion_rounds}\n"
-            f"Allowed action after <THINK>...</THINK>: {instructions}\n"
-            f"Discussion tokens used: {self.episode_state['tokens_used']}/{self.token_budget}\n"
+        # Keep episode-static data ahead of the growing visible transcript.
+        # Putting phase/round/budget here would invalidate the history's prefix
+        # whenever one of those fields changes.
+        prefix = (
+            f"You are Professor {agent_id}.\n"
             f"STUDENTS — Student | Your PRIVATE Utility{public_features}\n"
             + "\n".join(table)
-            + f"\nCOMPLETED READINESS CHECKS: {readiness}\n"
+            + "\n\nVISIBLE HISTORY (chronological):\n"
+        )
+        current_turn = (
+            "\n\n=== CURRENT TURN ===\n"
+            f"PHASE: {self.phase}; discussion round {self.discussion_round}/{self.max_discussion_rounds}\n"
+            f"Discussion tokens used: {self.episode_state['tokens_used']}/{self.token_budget}\n"
+            f"COMPLETED READINESS CHECKS: {readiness}\n"
+            f"Allowed action after your closed THINK block: {instructions}\n"
+            "Put all your reasoning inside one THINK block, then emit one allowed action."
         )
         if self.phase == "done":
             choice = self.episode_state["consensus_choice"]
@@ -216,16 +230,16 @@ class DeliberationVotingAdmissionsEnv(RewardComparisonAdmissionsEnv):
             # Canonical ordering prevents a tally's dict insertion order from
             # revealing which candidate was first mentioned in sealed ballots.
             tally = dict(sorted(self._vote_counts().items()))
-            header += f"ELECTION RESULT: {outcome}; tally {tally}.\n"
+            current_turn += f"\nELECTION RESULT: {outcome}; tally {tally}.\n"
         history = []
         for event in self.history_manager._get_visible_messages_for_agent(agent_id):
             marker = "YOUR PRIVATE" if event.get("private") else "PUBLIC"
             history.append(f"[{marker} {event['message_type']}; {event['agent_id']}] {event['text']}")
 
-        # Preserve the phase/utility header and newest visible events. Filtering
+        # Preserve the utility prefix, current turn, and newest visible events. Filtering
         # happens BEFORE trimming, so hidden events cannot affect the prompt.
         def render():
-            return header + "\nVISIBLE HISTORY (chronological):\n" + "\n".join(history)
+            return prefix + "\n".join(history) + current_turn
 
         def fits(text):
             if self.prompt_length is not None and self.tokenizer is not None:
